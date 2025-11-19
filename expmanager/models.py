@@ -4,7 +4,7 @@ from django.contrib.auth.models import User
 class ExperimentScript(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    script_code = models.TextField(help_text="Main Python sequence code")
+    script_code = models.TextField(help_text="Main sequence code")
     fpga_code = models.TextField(blank=True, help_text="FPGA real-time code snippet")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

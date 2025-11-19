@@ -31,15 +31,21 @@ class ExperimentEngine:
         script = self.run_request.script
         self.log(f"Starting experiment: {script.name}")
         
-        # Sandbox environment
-        local_scope = {
+        # Context for the parser
+        context = {
             'log': self.log,
             'sleep': time.sleep,
             'instruments': self.client,
             'fpga_code': script.fpga_code
         }
         
-        # Execute the script
-        exec(script.script_code, {}, local_scope)
+        # Execute using custom parser
+        from .parser import CustomScriptParser
+        parser = CustomScriptParser(context)
+        try:
+            parser.execute(script.script_code)
+        except Exception as e:
+            self.log(f"Execution Error: {e}", level='ERROR')
+            raise e
         
         self.log("Experiment finished successfully")
