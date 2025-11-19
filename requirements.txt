@@ -1,0 +1,8 @@
+Django>=4.2
+celery>=5.3
+redis>=5.0
+channels[daphne]>=4.0
+channels_redis>=4.1
+numpy
+h5py
+requests
