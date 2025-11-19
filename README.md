@@ -1,4 +1,4 @@
-# QuAIL (Quantum/Advanced Instrument Lab)
+# QuAIL (QuIQCL Automated Instrument Linking system)
 
 QuAIL is a Django-based server designed to manage and execute physics experiments using QCoDeS and `instrumentserver`. It employs a micro-service-like architecture to ensure stability, scalability, and real-time feedback.
 
