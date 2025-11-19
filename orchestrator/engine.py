@@ -1,5 +1,5 @@
 import time
-from experiments.models import RunLog
+from expmanager.models import RunLog
 from driver_proxy.client import InstrumentClient
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync

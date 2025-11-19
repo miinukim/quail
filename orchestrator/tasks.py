@@ -1,5 +1,5 @@
 from celery import shared_task
-from experiments.models import RunRequest
+from expmanager.models import RunRequest
 from .engine import ExperimentEngine
 import traceback
 from django.utils import timezone

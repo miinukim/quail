@@ -45,7 +45,7 @@ INSTALLED_APPS = [
     
     # Local apps
     'core',
-    'experiments',
+    'expmanager',
     'orchestrator',
     'driver_proxy',
     'visualizer',

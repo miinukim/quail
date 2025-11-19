@@ -6,7 +6,7 @@ QuAIL is a Django-based server designed to manage and execute physics experiment
 
 The system is divided into four distinct Django apps, each with a specific responsibility:
 
-### 1. `experiments` (The Manager)
+### 1. `expmanager` (The Manager)
 - **Role**: Administrative management.
 - **Responsibilities**:
     - Manages the database of Experiment Scripts and Run Requests.
