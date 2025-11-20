@@ -4,7 +4,7 @@ This document describes the custom syntax used for writing experiment scripts in
 
 ## Overview
 
-The QuAIL syntax is a simple, imperative language designed for controlling physics experiments. It supports parameter management, sequencer execution, data saving, and basic control flow (loops).
+The QuAIL syntax is a simple, imperative language designed for controlling physics experiments. It supports parameter management, sequencer execution, data saving, and basic control flow (loops and conditionals).
 
 ## Commands
 
@@ -52,9 +52,9 @@ Trigger the FPGA sequencer and capture returned data vectors.
 
 **Syntax:**
 ```text
-run()
+run(<seq_name>, <seq_code>)
 # OR
-<var1>, <var2> = run()
+<var1>, <var2> = run(<seq_name>, <seq_code>)
 ```
 
 **Example:**
@@ -63,11 +63,11 @@ run()
 run()
 
 # Run and capture 2 data vectors
-d1, d2 = run()
+d1, d2 = run("seq1", "rabi_code.py")
 ```
 
 ### 5. Initializing Data
-Define the structure of the data table before saving.
+Define the structure of the data table before saving. This must be called before any `save()` command.
 
 **Syntax:**
 ```text
@@ -80,7 +80,7 @@ init_data(param=("voltage", "current"), num_data=2)
 ```
 
 ### 6. Saving Data
-Save data points to the experiment log/database. Must match the initialized schema.
+Save data points to the experiment log/database. The arguments must match the initialized schema.
 
 **Syntax:**
 ```text
@@ -92,7 +92,7 @@ save(params=(<val1>, <val2>, ...), data=(<vec1>, <vec2>, ...))
 save(params=(v, i), data=(d1, d2))
 ```
 
-### 6. Timing
+### 7. Timing
 Pause execution for a specified duration (in seconds).
 
 **Syntax:**
@@ -105,7 +105,7 @@ sleep(<seconds>)
 sleep(0.5)
 ```
 
-### 6. Loops
+### 8. Loops
 Iterate over a range of values.
 
 **Syntax:**
@@ -119,8 +119,30 @@ for <variable> in (from <start> to <end> step <step_size>) {
 ```text
 for v in (from 0 to 10 step 0.1) {
     set dac v
-    run_sequencer()
-    save(voltage=v)
+    sleep(0.01)
+}
+```
+
+### 9. Conditional Logic
+Execute statements based on a condition.
+
+**Syntax:**
+```text
+if (<condition>) {
+    <statements>
+} else {
+    <statements>
+}
+```
+
+**Supported Comparisons:** `==`, `!=`, `<`, `<=`, `>`, `>=`
+
+**Example:**
+```text
+if (v > 2.5) {
+    set dac 0
+} else {
+    set dac v
 }
 ```
 
@@ -131,8 +153,16 @@ for v in (from 0 to 10 step 0.1) {
 # num_data: number of data vectors per save
 init_data(param=("v", "i"), num_data=2)
 
+# Define a threshold
+param threshold = 3.0
+
 for v in (from -5 to 5 step 0.5) {
-    set dac v
+    # Conditional logic
+    if (v > threshold) {
+        set dac threshold
+    } else {
+        set dac v
+    }
     
     # Wait for settle
     sleep(0.1)
