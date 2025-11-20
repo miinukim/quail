@@ -1,0 +1,86 @@
+[
+  {
+    "type": "INIT_DATA",
+    "kwargs": {
+      "param": {
+        "type": "TUPLE",
+        "items": [
+          "voltage"
+        ]
+      },
+      "num_data": 1
+    }
+  },
+  {
+    "type": "PARAM",
+    "name": "dac",
+    "value": "instrument.dac_voltage"
+  },
+  {
+    "type": "SET",
+    "name": "dac",
+    "value": 0
+  },
+  {
+    "type": "FOR",
+    "var": "i",
+    "start": 0,
+    "end": 5,
+    "step": 1,
+    "body": [
+      {
+        "type": "SET",
+        "name": "dac",
+        "value": {
+          "type": "VAR",
+          "name": "i"
+        }
+      },
+      {
+        "type": "IF",
+        "condition": {
+          "type": "BINOP",
+          "left": {
+            "type": "VAR",
+            "name": "i"
+          },
+          "op": "GT",
+          "right": 2
+        },
+        "true_body": [
+          {
+            "type": "RUN",
+            "args": [],
+            "targets": [
+              "d1"
+            ]
+          },
+          {
+            "type": "SAVE",
+            "kwargs": {
+              "params": {
+                "type": "TUPLE",
+                "items": [
+                  {
+                    "type": "VAR",
+                    "name": "i"
+                  }
+                ]
+              },
+              "data": {
+                "type": "TUPLE",
+                "items": [
+                  {
+                    "type": "VAR",
+                    "name": "d1"
+                  }
+                ]
+              }
+            }
+          }
+        ],
+        "false_body": []
+      }
+    ]
+  }
+]

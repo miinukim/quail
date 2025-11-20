@@ -27,6 +27,26 @@ class ExperimentEngine:
             }
         )
 
+    def save_data(self, params, data):
+        """
+        Handle data saving.
+        params: tuple of scalar values (axes)
+        data: tuple of data vectors (measurements)
+        """
+        # For now, just log the shape/values
+        # In production, this would write to HDF5/Database
+        self.log(f"DATA_SAVE: Params={params}, DataShapes={[len(d) for d in data]}")
+        
+        # Send to WebSocket for real-time plotting (if we had a visualizer)
+        async_to_sync(self.channel_layer.group_send)(
+            self.group_name,
+            {
+                'type': 'new_data',
+                'params': params,
+                'data': [list(d) for d in data] # Convert numpy/lists to serializable
+            }
+        )
+
     def run(self):
         script = self.run_request.script
         self.log(f"Starting experiment: {script.name}")
@@ -36,12 +56,13 @@ class ExperimentEngine:
             'log': self.log,
             'sleep': time.sleep,
             'instruments': self.client,
-            'fpga_code': script.fpga_code
+            'fpga_code': script.fpga_code,
+            'save_data': self.save_data
         }
         
         # Execute using custom parser
-        from .parser import CustomScriptParser
-        parser = CustomScriptParser(context)
+        from .parser import VirtualProcessor
+        parser = VirtualProcessor(context)
         try:
             parser.execute(script.script_code)
         except Exception as e:

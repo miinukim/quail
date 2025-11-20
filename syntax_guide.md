@@ -18,24 +18,25 @@ param <name> = <value_or_expression>
 
 **Example:**
 ```text
-# Define an alias (string)
-param dac = "keithley.voltage"
-
 # Define a variable from a GET command
-param t = get dac
+param t = get keithley.voltage
 ```
 
 ### 2. Setting Values
-Set a value to a parameter alias or a local variable.
+Set a value to a parameter or a local variable.
 
 **Syntax:**
 ```text
-set <alias_or_variable> <value>
+set <parameter_or_variable> <value>
 ```
 
 **Example:**
 ```text
-set dac 1.5
+# Set instrument parameter directly
+set keithley.voltage 1.5
+
+# Set local variable
+set my_var 10
 ```
 
 ### 3. Getting Values
@@ -65,17 +66,30 @@ run()
 d1, d2 = run()
 ```
 
-### 5. Saving Data
-Save data points to the experiment log/database. Supports grouping via tuples.
+### 5. Initializing Data
+Define the structure of the data table before saving.
 
 **Syntax:**
 ```text
-save(<key>=<value>, ...)
+init_data(param=(<axis1>, <axis2>, ...), num_data=<N>)
 ```
 
 **Example:**
 ```text
-save(var=(i, t), data=(d1, d2))
+init_data(param=("voltage", "current"), num_data=2)
+```
+
+### 6. Saving Data
+Save data points to the experiment log/database. Must match the initialized schema.
+
+**Syntax:**
+```text
+save(params=(<val1>, <val2>, ...), data=(<vec1>, <vec2>, ...))
+```
+
+**Example:**
+```text
+save(params=(v, i), data=(d1, d2))
 ```
 
 ### 6. Timing
@@ -111,26 +125,27 @@ for v in (from 0 to 10 step 0.1) {
 ```
 
 ## Example Script
-
 ```text
-# Define parameters
-param dac = "instr1.voltage"
-param magnet = "instr2.field"
+# Initialize data table schema
+# param: tuple of axis names
+# num_data: number of data vectors per save
+init_data(param=("v", "i"), num_data=2)
 
-# Initialize
-set magnet 0
-
-# Sweep voltage
 for v in (from -5 to 5 step 0.5) {
     set dac v
     
     # Wait for settle
     sleep(0.1)
     
-    # Run the fast sequence
-    run_sequencer()
+    # Get parameter value
+    i = get device2.voltage
     
-    # Save the setpoint
-    save(setpoint=v)
+    # Run sequencer with arguments and capture data
+    d1, d2 = run("seq1", "some_code.py")
+    
+    # Save data matching the initialized schema
+    # params: tuple of scalar values for axes
+    # data: tuple of data vectors
+    save(params=(v, i), data=(d1, d2))
 }
 ```
