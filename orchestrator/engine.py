@@ -61,7 +61,7 @@ class ExperimentEngine:
         }
         
         # Execute using custom parser
-        from .parser import VirtualProcessor
+        from .processor import VirtualProcessor
         parser = VirtualProcessor(context)
         try:
             parser.execute(script.script_code)

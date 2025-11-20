@@ -5,7 +5,7 @@ import json
 # Add project root to path
 sys.path.append(os.getcwd())
 
-from orchestrator.parser import VirtualProcessor
+from orchestrator.processor import VirtualProcessor
 
 code = """
 # Initialize data schema
