@@ -204,33 +204,26 @@ class Parser:
                 self.eat('COMMA')
                 args.append(self.expression())
         self.eat('RPAREN')
-        return {'type': 'RUN', 'args': args, 'targets': []}
+        return {'type': 'RUN', 'args': args, 'target': None}
 
     def assignment(self):
-        # d1, d2 = run(...) OR var = expr
-        targets = []
-        targets.append(self.current_token.value)
+        # var = run(...) OR var = expr
+        target = self.current_token.value
         self.eat('IDENTIFIER')
         
-        while self.current_token.type == 'COMMA':
-            self.eat('COMMA')
-            if self.current_token.type == 'ASSIGN':
-                break
-            targets.append(self.current_token.value)
-            self.eat('IDENTIFIER')
+        if self.current_token.type == 'COMMA':
+             self.error("Multiple assignment is no longer supported. Use 'var = run(...)'")
             
         self.eat('ASSIGN')
         
         if self.current_token.type == 'RUN':
             cmd = self.run_cmd()
-            cmd['targets'] = targets
+            cmd['target'] = target
             return cmd
         else:
             # General assignment: var = expr
-            if len(targets) != 1:
-                self.error("Multiple assignment only supported for RUN command")
             val = self.expression()
-            return {'type': 'ASSIGN', 'name': targets[0], 'value': val}
+            return {'type': 'ASSIGN', 'name': target, 'value': val}
 
     def init_data_cmd(self):
         self.eat('INIT_DATA')

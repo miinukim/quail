@@ -48,22 +48,22 @@ get <alias_or_path>
 ```
 
 ### 4. Running the Sequencer
-Trigger the FPGA sequencer and capture returned data vectors.
+Trigger the FPGA sequencer and capture returned data. The return value is a single data object (4xN array).
 
 **Syntax:**
 ```text
 run(<seq_name>, <seq_code>)
 # OR
-<var1>, <var2> = run(<seq_name>, <seq_code>)
+<var> = run(<seq_name>, <seq_code>)
 ```
 
 **Example:**
 ```text
 # Just run
-run()
+run("seq1", "code.py")
 
-# Run and capture 2 data vectors
-d1, d2 = run("seq1", "rabi_code.py")
+# Run and capture data
+d = run("seq1", "code.py")
 ```
 
 ### 5. Initializing Data
@@ -71,25 +71,25 @@ Define the structure of the data table before saving. This must be called before
 
 **Syntax:**
 ```text
-init_data(param=(<axis1>, <axis2>, ...), num_data=<N>)
+init_data(param=(<axis1>, <axis2>, ...))
 ```
 
 **Example:**
 ```text
-init_data(param=("voltage", "current"), num_data=2)
+init_data(param=("voltage", "current"))
 ```
 
 ### 6. Saving Data
-Save data points to the experiment log/database. The arguments must match the initialized schema.
+Save data points to the experiment log/database. The arguments must match the initialized schema. `data` accepts a single data object (4xN array).
 
 **Syntax:**
 ```text
-save(params=(<val1>, <val2>, ...), data=(<vec1>, <vec2>, ...))
+save(params=(<val1>, <val2>, ...), data=<data_object>)
 ```
 
 **Example:**
 ```text
-save(params=(v, i), data=(d1, d2))
+save(params=(v, i), data=d)
 ```
 
 ### 7. Timing
@@ -150,8 +150,7 @@ if (v > 2.5) {
 ```text
 # Initialize data table schema
 # param: tuple of axis names
-# num_data: number of data vectors per save
-init_data(param=("v", "i"), num_data=2)
+init_data(param=("v", "i"))
 
 # Define a threshold
 param threshold = 3.0
@@ -171,11 +170,11 @@ for v in (from -5 to 5 step 0.5) {
     i = get device2.voltage
     
     # Run sequencer with arguments and capture data
-    d1, d2 = run("seq1", "some_code.py")
+    d = run("seq1", "some_code.py")
     
     # Save data matching the initialized schema
     # params: tuple of scalar values for axes
-    # data: tuple of data vectors
-    save(params=(v, i), data=(d1, d2))
+    # data: single data object (4xN array)
+    save(params=(v, i), data=d)
 }
 ```

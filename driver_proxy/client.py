@@ -40,11 +40,17 @@ class InstrumentClient:
         """
         Get a parameter value.
         """
+        # Construct full path
+        if instrument:
+            full_path = f"{instrument}.{parameter}"
+        else:
+            full_path = parameter
+
         # Operation.get_param_dict
         instruction = {
             "operation": "get_param_dict",
             "serialization_opts": {
-                "path": instrument,
+                "path": full_path,
                 "attrs": ["value"],
                 "args": [],
                 "kwargs": {},
@@ -54,44 +60,48 @@ class InstrumentClient:
         }
         
         result = self._send(instruction)
-        # Result is typically {param_name: value} or nested
-        # Based on user code: self.buffer.extend(pdict[param])
-        if isinstance(result, dict) and parameter in result:
-            return result[parameter]
+        
+        # The result from instrumentserver for get_param_dict is typically a nested dictionary
+        # matching the structure of the requested path.
+        # However, since we are requesting a specific parameter, we hope to find the value easily.
+        # UNSURE: The exact return structure depends on instrumentserver version.
+        # We assume it returns {full_path: value} or {instrument: {param: value}}.
+        # For now, let's try to navigate or return the whole result if unsure.
+        
+        # If the result is a simple dictionary with the path as key (common in some versions)
+        if isinstance(result, dict):
+            if full_path in result:
+                return result[full_path]
+            # If it's nested {instrument: {param: value}}
+            parts = full_path.split('.')
+            curr = result
+            try:
+                for part in parts:
+                    curr = curr[part]
+                return curr
+            except (KeyError, TypeError):
+                pass
+                
         return result
 
     def set_parameter(self, instrument, parameter, value):
         """
         Set a parameter value.
         """
+        # Construct full path
+        if instrument:
+            full_path = f"{instrument}.{parameter}"
+        else:
+            full_path = parameter
+
         # Operation.set_params
         instruction = {
             "operation": "set_params",
             "set_parameters": {
-                parameter: value
+                full_path: value
             },
             "_class_type": "ServerInstruction"
         }
-        # Note: set_parameters usually takes full path or dict? 
-        # User code: await self._set_parameters({param: setto}) where param is likely "instrument.param"
-        # If 'parameter' arg is just the name, we might need to qualify it.
-        # Assuming 'parameter' passed here is fully qualified or unique enough.
-        # If instrument is passed, maybe we should combine them?
-        # Let's assume parameter is "instrument.param" or just "param" if unique.
-        # But the user code had: instrument = command["instrument"], param = command["param"], setto = ...
-        # And called _set_parameters({param: setto}). 
-        # So let's try to combine if needed. For now, I'll assume parameter is the full name or the server handles it.
-        
-        # Actually, looking at user code:
-        # elif cmd_type == "param":
-        #    instrument = command["instrument"]
-        #    param = command.get("param_name")
-        #    ...
-        #    await self._set_parameters({param: setto})
-        
-        # It seems 'param' might be the full path in the user's config.
-        # I will construct the dict as {parameter: value}.
-        
         return self._send(instruction)
 
     def call(self, target, *args, **kwargs):
@@ -110,30 +120,26 @@ class InstrumentClient:
         }
         return self._send(instruction)
 
-    def upload_fpga_code(self, code):
+    def upload_fpga_code(self, device_name, code):
         """
         Upload FPGA code.
-        Maps to 'artys7.load_program'.
         """
-        return self.call("artys7.load_program", code)
+        return self.call(f"{device_name}.load_program", code)
 
-    def trigger_fpga(self):
+    def trigger_fpga(self, device_name):
         """
         Trigger the FPGA.
-        Maps to 'artys7.start_sequencer'.
         """
-        return self.call("artys7.start_sequencer")
+        return self.call(f"{device_name}.start_sequencer")
 
-    def stop_fpga(self):
+    def stop_fpga(self, device_name):
         """
         Stop the FPGA.
-        Maps to 'artys7.stop_sequencer'.
         """
-        return self.call("artys7.stop_sequencer")
+        return self.call(f"{device_name}.stop_sequencer")
 
-    def run_fpga(self, code):
+    def run_fpga(self, device_name, code):
         """
         Run the FPGA with the given code.
-        Maps to 'artys7.run'.
         """
-        return self.call("artys7.run", code)
+        return self.call(f"{device_name}.run", code)

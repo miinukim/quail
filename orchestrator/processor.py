@@ -98,40 +98,30 @@ class VirtualProcessor:
             args = [self.evaluate(a) for a in stmt['args']]
             self.context['log'](f"Running Sequencer with args: {args}")
             
-            # Mock return data
+            # In reality: data = self.context['instruments'].run_fpga(*args)
+            # Mock return data: 4xN array
             import random
-            # Return as many vectors as targets, or 1 if no targets
-            num_returns = len(stmt['targets']) if stmt['targets'] else 1
-            # Mock data: vectors of length 100
-            data = [[random.random() for _ in range(100)] for _ in range(num_returns)]
+            N = 100
+            # 4 rows of data
+            data = [[random.random() for _ in range(N)] for _ in range(4)]
             
-            # In reality: self.context['instruments'].run_fpga(*args)
-            
-            if not stmt['targets']:
-                 pass # Just run
-            else:
-                for i, target in enumerate(stmt['targets']):
-                    if i < len(data):
-                        self.vars[target] = data[i]
-                        self.context['log'](f"Assigned data to {target}")
+            target = stmt.get('target')
+            if target:
+                self.vars[target] = data
+                self.context['log'](f"Assigned data to {target}")
 
         elif stype == 'INIT_DATA':
             kwargs = {k: self.evaluate(v) for k, v in stmt['kwargs'].items()}
             
-            if 'param' not in kwargs or 'num_data' not in kwargs:
-                raise Exception("init_data requires 'param' and 'num_data' arguments")
+            if 'param' not in kwargs:
+                raise Exception("init_data requires 'param' argument")
             
             params = kwargs['param']
             if not isinstance(params, (list, tuple)):
                 raise Exception("'param' argument in init_data must be a tuple of strings")
                 
-            num_data = kwargs['num_data']
-            if not isinstance(num_data, int):
-                raise Exception("'num_data' argument in init_data must be an integer")
-                
             self.data_schema = {
-                'param_axes': params,
-                'num_data': num_data
+                'param_axes': params
             }
             self.context['log'](f"Initialized data schema: {self.data_schema}")
 
@@ -158,28 +148,24 @@ class VirtualProcessor:
             if len(params) != len(self.data_schema['param_axes']):
                 raise Exception(f"Expected {len(self.data_schema['param_axes'])} params, got {len(params)}")
                 
-            # Validate data
+            # Validate data: expect 4xN array (list of lists)
             if not isinstance(data, (list, tuple)):
-                # Allow single value if schema expects 1 data
-                if self.data_schema['num_data'] == 1:
-                    data = (data,)
-                else:
-                    raise Exception(f"save() 'data' must be a tuple of length {self.data_schema['num_data']}")
+                 raise Exception("save() 'data' must be a list/tuple (4xN array)")
             
-            if len(data) != self.data_schema['num_data']:
-                raise Exception(f"Expected {self.data_schema['num_data']} data vectors, got {len(data)}")
+            if len(data) != 4:
+                raise Exception(f"Expected data to have 4 rows (4xN), got {len(data)}")
                 
             # Validate data lengths
             vector_len = None
             for i, d in enumerate(data):
                 if not isinstance(d, (list, tuple)):
-                     raise Exception(f"Data item {i} is not a vector (list/tuple)")
+                     raise Exception(f"Data row {i} is not a vector (list/tuple)")
                 if vector_len is None:
                     vector_len = len(d)
                 elif len(d) != vector_len:
                     raise Exception(f"Data vector lengths mismatch: {vector_len} vs {len(d)}")
             
-            self.context['log'](f"Saving valid data block: params={params}, data_shape=({len(data)}, {vector_len})")
+            self.context['log'](f"Saving valid data block: params={params}, data_shape=(4, {vector_len})")
             
             if 'save_data' in self.context:
                 self.context['save_data'](params, data)
