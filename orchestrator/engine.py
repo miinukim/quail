@@ -1,4 +1,5 @@
 import time
+import os
 from expmanager.models import RunLog
 from driver_proxy.client import InstrumentClient
 from channels.layers import get_channel_layer
@@ -53,7 +54,6 @@ class ExperimentEngine:
         
         # Context for the parser
         context = {
-            'log': self.log,
             'sleep': time.sleep,
             'instruments': self.client,
             'fpga_code': script.fpga_code,
@@ -62,9 +62,9 @@ class ExperimentEngine:
         
         # Execute using custom parser
         from .processor import VirtualProcessor
-        parser = VirtualProcessor(context)
+        processor = VirtualProcessor(context)
         try:
-            parser.execute(script.script_code)
+            processor.execute(script.script_code)
         except Exception as e:
             self.log(f"Execution Error: {e}", level='ERROR')
             raise e

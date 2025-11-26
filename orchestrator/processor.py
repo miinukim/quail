@@ -1,21 +1,60 @@
+import logging
+import os
+import datetime
 from .parser import Lexer, Parser
 
 class VirtualProcessor:
-    def __init__(self, context):
+    def __init__(self, context, log_dir = None):
+        """
+        Initialize the VirtualProcessor with a context and log directory.
+        Context should contain:
+        - 'instruments': InstrumentClient instance
+        - 'sleep': sleep function
+        - 'save_data': data saving function
+        
+        Logs will be written to a file in log_dir.
+        """
         self.context = context
         self.vars = {}   # name -> value (includes params)
         self.data_schema = None # { 'param_axes': [], 'num_data': N }
+        
+        # Setup logging
+        self.logger = logging.getLogger(f'VirtualProcessor_{id(self)}')
+        self.logger.setLevel(logging.INFO)
+        self.logger.handlers = [] # Clear existing handlers
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        if log_dir is None:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            log_dir = os.path.join(base_dir, 'logs')
+        log_file = os.path.join(log_dir, f"experiment_{timestamp}.log")
+        
+        handler = logging.FileHandler(log_file)
+        formatter = logging.Formatter('%(asctime)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
 
     def parse(self, code):
+        """
+        Parse the given code into an AST.
+        """
         lexer = Lexer(code)
         parser = Parser(lexer)
         return parser.program()
 
     def execute(self, code):
+        """
+        Parse and execute the given code.
+        """
         ast = self.parse(code)
-        self.run_block(ast)
+        self.start_proc(ast)
 
     def evaluate(self, node):
+        """
+        Evaluate an AST node (expression).
+        Handles literals, variables, GET commands, tuples, and binary operations.
+        """
         if isinstance(node, (int, float, str)):
             return node
         
@@ -37,13 +76,11 @@ class VirtualProcessor:
                         inst = parts[0]
                         param = '.'.join(parts[1:])
                         val = self.context['instruments'].get_parameter(inst, param)
-                        self.context['log'](f"Got {path} = {val}")
+                        self.logger.info(f"Got {path} = {val}")
                         return val
                     else:
-                        # Try with single name (maybe instrument is implied or handled by server)
-                        val = self.context['instruments'].get_parameter(None, path)
-                        self.context['log'](f"Got {path} = {val}")
-                        return val
+                        # Parameter without instrument is not valid, placeholder for potential future feature
+                        raise ValueError("Invalid parameter name, expected instrument.parameter")
                 return 0 # Fallback
             elif node['type'] == 'TUPLE':
                 return tuple(self.evaluate(item) for item in node['items'])
@@ -59,17 +96,23 @@ class VirtualProcessor:
                 elif op == 'GTE': return left >= right
         return node
 
-    def run_block(self, statements):
+    def start_proc(self, statements):
+        """
+        Execute a list of statements sequentially.
+        """
         for stmt in statements:
             self.execute_statement(stmt)
 
     def execute_statement(self, stmt):
+        """
+        Execute a single statement based on its type.
+        """
         stype = stmt['type']
         
         if stype == 'PARAM':
             val = self.evaluate(stmt['value'])
             self.vars[stmt['name']] = val
-            self.context['log'](f"Defined param {stmt['name']} = {val}")
+            self.logger.info(f"Defined param {stmt['name']} = {val}")
             
         elif stype == 'SET':
             val = self.evaluate(stmt['value'])
@@ -84,19 +127,19 @@ class VirtualProcessor:
                     inst = parts[0]
                     param = '.'.join(parts[1:])
                     self.context['instruments'].set_parameter(inst, param, val)
-                    self.context['log'](f"Set {path} = {val}")
+                    self.logger.info(f"Set {path} = {val}")
                 else:
                     self.context['instruments'].set_parameter(None, path, val)
-                    self.context['log'](f"Set {path} = {val}")
+                    self.logger.info(f"Set {path} = {val}")
 
         elif stype == 'ASSIGN':
             val = self.evaluate(stmt['value'])
             self.vars[stmt['name']] = val
-            # self.context['log'](f"Assigned {stmt['name']} = {val}")
+            # self.logger.info(f"Assigned {stmt['name']} = {val}")
 
         elif stype == 'RUN':
             args = [self.evaluate(a) for a in stmt['args']]
-            self.context['log'](f"Running Sequencer with args: {args}")
+            self.logger.info(f"Running Sequencer with args: {args}")
             
             # In reality: data = self.context['instruments'].run_fpga(*args)
             # Mock return data: 4xN array
@@ -108,7 +151,7 @@ class VirtualProcessor:
             target = stmt.get('target')
             if target:
                 self.vars[target] = data
-                self.context['log'](f"Assigned data to {target}")
+                self.logger.info(f"Assigned data to {target}")
 
         elif stype == 'INIT_DATA':
             kwargs = {k: self.evaluate(v) for k, v in stmt['kwargs'].items()}
@@ -123,7 +166,7 @@ class VirtualProcessor:
             self.data_schema = {
                 'param_axes': params
             }
-            self.context['log'](f"Initialized data schema: {self.data_schema}")
+            self.logger.info(f"Initialized data schema: {self.data_schema}")
 
         elif stype == 'SAVE':
             if self.data_schema is None:
@@ -165,12 +208,12 @@ class VirtualProcessor:
                 elif len(d) != vector_len:
                     raise Exception(f"Data vector lengths mismatch: {vector_len} vs {len(d)}")
             
-            self.context['log'](f"Saving valid data block: params={params}, data_shape=(4, {vector_len})")
+            self.logger.info(f"Saving valid data block: params={params}, data_shape=(4, {vector_len})")
             
             if 'save_data' in self.context:
                 self.context['save_data'](params, data)
             else:
-                self.context['log']("WARNING: No save_data handler in context")
+                self.logger.info("WARNING: No save_data handler in context")
 
         elif stype == 'SLEEP':
             duration = self.evaluate(stmt['duration'])
@@ -190,11 +233,11 @@ class VirtualProcessor:
             
             for val in vals:
                 self.vars[var] = float(val)
-                self.run_block(stmt['body'])
+                self.start_proc(stmt['body'])
 
         elif stype == 'IF':
             condition = self.evaluate(stmt['condition'])
             if condition:
-                self.run_block(stmt['true_body'])
+                self.start_proc(stmt['true_body'])
             elif stmt['false_body']:
-                self.run_block(stmt['false_body'])
+                self.start_proc(stmt['false_body'])

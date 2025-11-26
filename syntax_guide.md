@@ -54,7 +54,7 @@ Trigger the FPGA sequencer and capture returned data. The return value is a sing
 ```text
 run(<seq_name>, <seq_code>)
 # OR
-<var> = run(<seq_name>, <seq_code>)
+<data> = run(<seq_name>, <seq_code>)
 ```
 
 **Example:**

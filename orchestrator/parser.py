@@ -11,12 +11,18 @@ class Token:
 
 class Lexer:
     def __init__(self, code):
+        """
+        Initialize the Lexer with the source code.
+        """
         self.code = code
         self.pos = 0
         self.line = 1
         self.current_char = self.code[self.pos] if self.pos < len(self.code) else None
 
     def advance(self):
+        """
+        Advance the `pos` pointer and update the `current_char`.
+        """
         self.pos += 1
         if self.pos < len(self.code):
             self.current_char = self.code[self.pos]
@@ -24,12 +30,18 @@ class Lexer:
             self.current_char = None
 
     def skip_whitespace(self):
+        """
+        Skip whitespace characters.
+        """
         while self.current_char is not None and self.current_char.isspace():
             if self.current_char == '\n':
                 self.line += 1
             self.advance()
 
     def number(self):
+        """
+        Return a (multidigit) integer or float consumed from the input.
+        """
         result = ''
         while self.current_char is not None and (self.current_char.isdigit() or self.current_char == '.'):
             result += self.current_char
@@ -41,6 +53,9 @@ class Lexer:
             return Token('NUMBER', int(result), self.line)
 
     def string(self):
+        """
+        Return a string consumed from the input.
+        """
         self.advance() # Skip opening quote
         result = ''
         while self.current_char is not None and self.current_char != '"':
@@ -50,6 +65,9 @@ class Lexer:
         return Token('STRING', result, self.line)
 
     def identifier(self):
+        """
+        Handle identifiers and reserved keywords.
+        """
         result = ''
         while self.current_char is not None and (self.current_char.isalnum() or self.current_char == '_' or self.current_char == '.'):
             result += self.current_char
@@ -65,6 +83,11 @@ class Lexer:
         return Token(keywords.get(result, 'IDENTIFIER'), result, self.line)
 
     def get_next_token(self):
+        """
+        Lexical analyzer (also known as scanner or tokenizer).
+        This method is responsible for breaking a sentence
+        apart into tokens. One token at a time.
+        """
         while self.current_char is not None:
             if self.current_char.isspace():
                 self.skip_whitespace()
@@ -139,25 +162,43 @@ class Lexer:
 
 class Parser:
     def __init__(self, lexer):
+        """
+        Initialize the Parser with a Lexer instance.
+        """
         self.lexer = lexer
         self.current_token = self.lexer.get_next_token()
 
     def error(self, msg):
+        """
+        Raise a parser error.
+        """
         raise Exception(f"Parser Error at line {self.current_token.line}: {msg}")
 
-    def eat(self, token_type):
+    def process_token(self, token_type):
+        """
+        Compare the current token type with the passed token
+        type and if they match then "process_token" the current token
+        and assign the next token to the self.current_token,
+        otherwise raise an exception.
+        """
         if self.current_token.type == token_type:
             self.current_token = self.lexer.get_next_token()
         else:
             self.error(f"Expected {token_type}, got {self.current_token.type}")
 
     def program(self):
+        """
+        program : statement*
+        """
         statements = []
         while self.current_token.type != 'EOF':
             statements.append(self.statement())
         return statements
 
     def statement(self):
+        """
+        statement : param_decl | set_cmd | run_cmd | assignment | save_cmd | init_data_cmd | sleep_cmd | for_loop | if_stmt
+        """
         if self.current_token.type == 'PARAM':
             return self.param_decl()
         elif self.current_token.type == 'SET':
@@ -180,41 +221,53 @@ class Parser:
             self.error(f"Unexpected token {self.current_token.type}")
 
     def param_decl(self):
-        self.eat('PARAM')
+        """
+        param_decl : PARAM IDENTIFIER ASSIGN expression
+        """
+        self.process_token('PARAM')
         name = self.current_token.value
-        self.eat('IDENTIFIER')
-        self.eat('ASSIGN')
+        self.process_token('IDENTIFIER')
+        self.process_token('ASSIGN')
         val = self.expression()
         return {'type': 'PARAM', 'name': name, 'value': val}
 
     def set_cmd(self):
-        self.eat('SET')
+        """
+        set_cmd : SET IDENTIFIER expression
+        """
+        self.process_token('SET')
         name = self.current_token.value
-        self.eat('IDENTIFIER')
+        self.process_token('IDENTIFIER')
         val = self.expression()
         return {'type': 'SET', 'name': name, 'value': val}
 
     def run_cmd(self):
-        self.eat('RUN')
-        self.eat('LPAREN')
+        """
+        run_cmd : RUN LPAREN (expression (COMMA expression)*)? RPAREN
+        """
+        self.process_token('RUN')
+        self.process_token('LPAREN')
         args = []
         if self.current_token.type != 'RPAREN':
             args.append(self.expression())
             while self.current_token.type == 'COMMA':
-                self.eat('COMMA')
+                self.process_token('COMMA')
                 args.append(self.expression())
-        self.eat('RPAREN')
+        self.process_token('RPAREN')
         return {'type': 'RUN', 'args': args, 'target': None}
 
     def assignment(self):
+        """
+        assignment : IDENTIFIER ASSIGN (expression | run_cmd)
+        """
         # var = run(...) OR var = expr
         target = self.current_token.value
-        self.eat('IDENTIFIER')
+        self.process_token('IDENTIFIER')
         
         if self.current_token.type == 'COMMA':
              self.error("Multiple assignment is no longer supported. Use 'var = run(...)'")
             
-        self.eat('ASSIGN')
+        self.process_token('ASSIGN')
         
         if self.current_token.type == 'RUN':
             cmd = self.run_cmd()
@@ -226,68 +279,80 @@ class Parser:
             return {'type': 'ASSIGN', 'name': target, 'value': val}
 
     def init_data_cmd(self):
-        self.eat('INIT_DATA')
-        self.eat('LPAREN')
+        """
+        init_data_cmd : INIT_DATA LPAREN (IDENTIFIER ASSIGN expression (COMMA IDENTIFIER ASSIGN expression)*)? RPAREN
+        """
+        self.process_token('INIT_DATA')
+        self.process_token('LPAREN')
         kwargs = {}
         while self.current_token.type != 'RPAREN':
             if self.current_token.type == 'PARAM':
                 key = 'param'
-                self.eat('PARAM')
+                self.process_token('PARAM')
             else:
                 key = self.current_token.value
-                self.eat('IDENTIFIER')
+                self.process_token('IDENTIFIER')
             
-            self.eat('ASSIGN')
+            self.process_token('ASSIGN')
             val = self.expression()
             kwargs[key] = val
             if self.current_token.type == 'COMMA':
-                self.eat('COMMA')
-        self.eat('RPAREN')
+                self.process_token('COMMA')
+        self.process_token('RPAREN')
         return {'type': 'INIT_DATA', 'kwargs': kwargs}
 
     def save_cmd(self):
-        self.eat('SAVE')
-        self.eat('LPAREN')
+        """
+        save_cmd : SAVE LPAREN (IDENTIFIER ASSIGN expression (COMMA IDENTIFIER ASSIGN expression)*)? RPAREN
+        """
+        self.process_token('SAVE')
+        self.process_token('LPAREN')
         kwargs = {}
         while self.current_token.type != 'RPAREN':
             key = self.current_token.value
-            self.eat('IDENTIFIER')
-            self.eat('ASSIGN')
+            self.process_token('IDENTIFIER')
+            self.process_token('ASSIGN')
             val = self.expression()
             kwargs[key] = val
             if self.current_token.type == 'COMMA':
-                self.eat('COMMA')
-        self.eat('RPAREN')
+                self.process_token('COMMA')
+        self.process_token('RPAREN')
         return {'type': 'SAVE', 'kwargs': kwargs}
 
     def sleep_cmd(self):
-        self.eat('SLEEP')
-        self.eat('LPAREN')
+        """
+        sleep_cmd : SLEEP LPAREN expression RPAREN
+        """
+        self.process_token('SLEEP')
+        self.process_token('LPAREN')
         duration = self.expression()
-        self.eat('RPAREN')
+        self.process_token('RPAREN')
         return {'type': 'SLEEP', 'duration': duration}
 
     def for_loop(self):
-        self.eat('FOR')
+        """
+        for_loop : FOR IDENTIFIER IN LPAREN FROM expression TO expression (STEP expression)? RPAREN LBRACE statement* RBRACE
+        """
+        self.process_token('FOR')
         var_name = self.current_token.value
-        self.eat('IDENTIFIER')
-        self.eat('IN')
-        self.eat('LPAREN')
-        self.eat('FROM')
+        self.process_token('IDENTIFIER')
+        self.process_token('IN')
+        self.process_token('LPAREN')
+        self.process_token('FROM')
         start = self.expression()
-        self.eat('TO')
+        self.process_token('TO')
         end = self.expression()
         step = 1.0
         if self.current_token.type == 'STEP':
-            self.eat('STEP')
+            self.process_token('STEP')
             step = self.expression()
-        self.eat('RPAREN')
+        self.process_token('RPAREN')
         
-        self.eat('LBRACE')
+        self.process_token('LBRACE')
         body = []
         while self.current_token.type != 'RBRACE':
             body.append(self.statement())
-        self.eat('RBRACE')
+        self.process_token('RBRACE')
         
         return {
             'type': 'FOR',
@@ -299,29 +364,35 @@ class Parser:
         }
 
     def if_stmt(self):
-        self.eat('IF')
-        self.eat('LPAREN')
+        """
+        if_stmt : IF LPAREN expression RPAREN LBRACE statement* RBRACE (ELSE LBRACE statement* RBRACE)?
+        """
+        self.process_token('IF')
+        self.process_token('LPAREN')
         condition = self.expression()
-        self.eat('RPAREN')
-        self.eat('LBRACE')
+        self.process_token('RPAREN')
+        self.process_token('LBRACE')
         
         true_body = []
         while self.current_token.type != 'RBRACE':
             true_body.append(self.statement())
-        self.eat('RBRACE')
+        self.process_token('RBRACE')
         
         false_body = None
         if self.current_token.type == 'ELSE':
-            self.eat('ELSE')
-            self.eat('LBRACE')
+            self.process_token('ELSE')
+            self.process_token('LBRACE')
             false_body = []
             while self.current_token.type != 'RBRACE':
                 false_body.append(self.statement())
-            self.eat('RBRACE')
+            self.process_token('RBRACE')
             
         return {'type': 'IF', 'condition': condition, 'true_body': true_body, 'false_body': false_body}
 
     def expression(self):
+        """
+        expression : term ((EQ | NEQ | LT | LTE | GT | GTE) term)*
+        """
         # Simple expression parser: only supports basic types and comparisons for now
         # Need to expand for full expression support (precedence, etc.)
         # For now, let's handle comparisons as a flat list or simple binary op
@@ -330,41 +401,44 @@ class Parser:
         
         while self.current_token.type in ('EQ', 'NEQ', 'LT', 'LTE', 'GT', 'GTE'):
             op = self.current_token.type
-            self.eat(op)
+            self.process_token(op)
             right = self.term()
             left = {'type': 'BINOP', 'left': left, 'op': op, 'right': right}
             
         return left
 
     def term(self):
+        """
+        term : NUMBER | STRING | IDENTIFIER | GET IDENTIFIER | LPAREN expression (COMMA expression)* RPAREN
+        """
         if self.current_token.type == 'NUMBER':
             token = self.current_token
-            self.eat('NUMBER')
+            self.process_token('NUMBER')
             return token.value
         elif self.current_token.type == 'STRING':
             token = self.current_token
-            self.eat('STRING')
+            self.process_token('STRING')
             return token.value
         elif self.current_token.type == 'IDENTIFIER':
             name = self.current_token.value
-            self.eat('IDENTIFIER')
+            self.process_token('IDENTIFIER')
             return {'type': 'VAR', 'name': name}
         elif self.current_token.type == 'GET':
-            self.eat('GET')
+            self.process_token('GET')
             name = self.current_token.value
-            self.eat('IDENTIFIER')
+            self.process_token('IDENTIFIER')
             return {'type': 'GET', 'target': name}
         elif self.current_token.type == 'LPAREN':
             # Tuple: (a, b, ...)
-            self.eat('LPAREN')
+            self.process_token('LPAREN')
             items = []
             items.append(self.expression())
             while self.current_token.type == 'COMMA':
-                self.eat('COMMA')
+                self.process_token('COMMA')
                 if self.current_token.type == 'RPAREN':
                     break
                 items.append(self.expression())
-            self.eat('RPAREN')
+            self.process_token('RPAREN')
             return {'type': 'TUPLE', 'items': items}
         else:
             self.error(f"Unexpected token in expression: {self.current_token.type}")
