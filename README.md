@@ -1,6 +1,6 @@
 # QuAIL (QuIQCL Automated Instrument Linking system)
 
-QuAIL is a Django-based server designed to manage and execute physics experiments using QCoDeS and `instrumentserver`. It features a custom domain-specific language for experiment scripts, priority-based job scheduling, and real-time data streaming.
+QuAIL is a Django-based server designed to manage and execute experiments using QCoDeS and `instrumentserver`. It features a custom domain-specific language for experiment scripts, priority-based job scheduling, and real-time data streaming.
 
 ## Documentation
 
@@ -14,7 +14,7 @@ The system is divided into three Django apps, each with a specific responsibilit
 ### 1. `expmanager` (Experiment Manager)
 - **Role**: User-facing experiment management and job scheduling.
 - **Responsibilities**:
-    - Manages the database of Experiment Scripts and Run Requests.
+    - Manages the database of Experiment Scripts and Experiment Runs.
     - Handles priority-based job queue via Celery.
     - Exposes the REST API for experiment submission and control.
     - Manages experiment lifecycle (start, abort, status tracking).
@@ -96,10 +96,10 @@ The system is divided into three Django apps, each with a specific responsibilit
 ## Usage
 
 1.  **Create an Experiment Script**: Define your experiment using the QuAIL syntax
-2.  **Queue a Run**: Create a `RunRequest` via the API
-3.  **Start**: Trigger execution via POST to `/api/run-requests/{id}/start/`
+2.  **Queue a Run**: Create an `ExperimentRun` via the API
+3.  **Start**: Trigger execution via POST to `/api/experiment-runs/{id}/start/`
 4.  **Monitor**: Connect to WebSocket at `/ws/experiment/{run_id}/` for live updates
-5.  **Abort** (optional): Cancel via POST to `/api/run-requests/{id}/abort/`
+5.  **Abort** (optional): Cancel via POST to `/api/experiment-runs/{id}/abort/`
 
 ### Example Script
 

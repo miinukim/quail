@@ -1,14 +1,14 @@
 from rest_framework import serializers
-from .models import ExperimentScript, RunRequest, RunLog
+from .models import ExperimentScript, ExperimentRun, RunLog
 
 class ExperimentScriptSerializer(serializers.ModelSerializer):
     class Meta:
         model = ExperimentScript
         fields = '__all__'
 
-class RunRequestSerializer(serializers.ModelSerializer):
+class ExperimentRunSerializer(serializers.ModelSerializer):
     class Meta:
-        model = RunRequest
+        model = ExperimentRun
         fields = '__all__'
 
 class RunLogSerializer(serializers.ModelSerializer):

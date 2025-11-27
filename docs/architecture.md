@@ -49,7 +49,7 @@ QuAIL is a Django-based experiment management system for experiments with device
 │                      Data Persistence Layer                         │
 │  ┌──────────────────────┐  ┌──────────────────────────────────────┐ │
 │  │  PostgreSQL/SQLite   │  │        HDF5 Files                    │ │
-│  │  - RunRequest        │  │  - Experiment data (4, N, M)         │ │
+│  │  - ExperimentRun        │  │  - Experiment data (4, N, M)         │ │
 │  │  - ExperimentScript  │  │  - Parameter values                  │ │
 │  │  - RunLog            │  │  - Metadata                          │ │
 │  └──────────────────────┘  └──────────────────────────────────────┘ │
@@ -71,11 +71,11 @@ QuAIL is a Django-based experiment management system for experiments with device
 #### a. `expmanager` (Experiment Manager)
 - **Models**:
   - `ExperimentScript`: Stores experiment code and FPGA code
-  - `RunRequest`: Tracks experiment execution (status, priority, data file)
+  - `ExperimentRun`: Tracks experiment execution (status, priority, data file)
   - `RunLog`: Stores execution logs
 - **Views**:
   - `ExperimentScriptViewSet`: CRUD for scripts
-  - `RunRequestViewSet`: 
+  - `ExperimentRunViewSet`: 
     - `start` action: Queues experiment with priority
     - `abort` action: Cancels running experiment
   - `RunLogViewSet`: Read-only access to logs
@@ -128,7 +128,7 @@ QuAIL is a Django-based experiment management system for experiments with device
    ├─ FPGA code (optional)
    └─ Metadata (name, description)
 
-2. Frontend creates RunRequest
+2. Frontend creates ExperimentRun
    POST /api/run-requests/
    ├─ Links to ExperimentScript
    ├─ Sets priority
@@ -141,7 +141,7 @@ QuAIL is a Django-based experiment management system for experiments with device
 3. User clicks "Start" in UI
    POST /api/run-requests/{id}/start/
 
-4. RunRequestViewSet.start() [expmanager/views.py]
+4. ExperimentRunViewSet.start() [expmanager/views.py]
    ├─ Validates status == QUEUED
    ├─ Calls: run_experiment_task.apply_async(args=[run_id], priority=run_request.priority)
    └─ Returns: {status: "Experiment queued", task_id: "..."}
@@ -153,7 +153,7 @@ QuAIL is a Django-based experiment management system for experiments with device
 ### Phase 3: Experiment Execution
 
 ```
-6. Task updates RunRequest
+6. Task updates ExperimentRun
    ├─ status = RUNNING
    ├─ started_at = now()
    └─ save()
@@ -204,7 +204,7 @@ for v in (from 0 to 5 step 0.1):
         ├─ Creates datasets:
         │   ├─ data: (4, 0, 0) -> will be (4, N, num_saves)
         │   └─ params: (2, 0) -> will be (2, num_saves)
-        └─ Updates RunRequest.data_file
+        └─ Updates ExperimentRun.data_file
 
 11. FOR loop iteration (e.g., v=0.5)
     
@@ -280,7 +280,7 @@ for v in (from 0 to 5 step 0.1):
 15. Normal completion:
     ├─ VirtualProcessor finishes all commands
     ├─ ExperimentEngine.run() returns
-    └─ Task updates RunRequest:
+    └─ Task updates ExperimentRun:
         ├─ status = COMPLETED
         ├─ completed_at = now()
         └─ save()
@@ -303,7 +303,7 @@ User clicks "Abort" in UI
     ↓
 POST /api/run-requests/{id}/abort/
     ↓
-RunRequestViewSet.abort()
+ExperimentRunViewSet.abort()
     ├─ Validates status in [QUEUED, RUNNING]
     ├─ Sets status = CANCELLED
     └─ save()
@@ -347,7 +347,7 @@ save() command → ExperimentEngine.save_data()
 
 ### Database
 ```
-RunRequest: Tracks experiment status, priority, data file path
+ExperimentRun: Tracks experiment status, priority, data file path
 RunLog: Persistent log storage
 ExperimentScript: Script code storage
 ```
@@ -400,7 +400,7 @@ ExperimentScript: Script code storage
 ```
 quail/
 ├─ expmanager/          # User-facing experiment management
-│  ├─ models.py         # ExperimentScript, RunRequest, RunLog
+│  ├─ models.py         # ExperimentScript, ExperimentRun, RunLog
 │  ├─ views.py          # REST API endpoints
 │  ├─ tasks.py          # Celery tasks
 │  └─ serializers.py

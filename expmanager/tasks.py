@@ -3,7 +3,7 @@ Defines the Celery tasks for the expmanager app.
 Includes the `run_experiment_task` which is the entry point for background experiment execution.
 """
 from celery import shared_task
-from expmanager.models import RunRequest
+from expmanager.models import ExperimentRun
 from orchestrator.engine import ExperimentEngine
 import traceback
 from django.utils import timezone
@@ -11,28 +11,28 @@ from django.utils import timezone
 @shared_task(bind=True)
 def run_experiment_task(self, run_id):
     try:
-        run_request = RunRequest.objects.get(id=run_id)
-    except RunRequest.DoesNotExist:
-        return f"RunRequest {run_id} not found"
+        experiment_run = ExperimentRun.objects.get(id=run_id)
+    except ExperimentRun.DoesNotExist:
+        return f"ExperimentRun {run_id} not found"
 
-    run_request.status = 'RUNNING'
-    run_request.started_at = timezone.now()
-    run_request.save()
+    experiment_run.status = 'RUNNING'
+    experiment_run.started_at = timezone.now()
+    experiment_run.save()
 
-    engine = ExperimentEngine(run_request)
+    engine = ExperimentEngine(experiment_run)
     
     try:
         engine.run()
-        run_request.status = 'COMPLETED'
+        experiment_run.status = 'COMPLETED'
     except InterruptedError:
-        run_request.status = 'CANCELLED'
+        experiment_run.status = 'CANCELLED'
         engine.log("Experiment cancelled.")
     except Exception as e:
-        run_request.status = 'FAILED'
+        experiment_run.status = 'FAILED'
         engine.log(f"Error: {str(e)}")
         engine.log(traceback.format_exc())
     finally:
-        run_request.completed_at = timezone.now()
-        run_request.save()
+        experiment_run.completed_at = timezone.now()
+        experiment_run.save()
         
-    return run_request.status
+    return experiment_run.status

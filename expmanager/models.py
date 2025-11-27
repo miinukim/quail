@@ -13,7 +13,7 @@ class ExperimentScript(models.Model):
     def __str__(self):
         return self.name
 
-class RunRequest(models.Model):
+class ExperimentRun(models.Model):
     STATUS_CHOICES = [
         ('QUEUED', 'Queued'),
         ('RUNNING', 'Running'),
@@ -35,7 +35,7 @@ class RunRequest(models.Model):
         return f"Run {self.id}: {self.script.name} ({self.status})"
 
 class RunLog(models.Model):
-    run_request = models.ForeignKey(RunRequest, related_name='logs', on_delete=models.CASCADE)
+    experiment_run = models.ForeignKey(ExperimentRun, related_name='logs', on_delete=models.CASCADE)
     timestamp = models.DateTimeField(auto_now_add=True)
     level = models.CharField(max_length=20, default='INFO')
     message = models.TextField()
