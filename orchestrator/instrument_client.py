@@ -1,3 +1,7 @@
+"""
+InstrumentClient acts as a proxy for communicating with the Instrument Server.
+It uses ZeroMQ to send commands (get/set parameters, call methods) to the server.
+"""
 import zmq
 import json
 import logging
@@ -63,15 +67,10 @@ class InstrumentClient:
         
         # The result from instrumentserver for get_param_dict is typically a nested dictionary
         # matching the structure of the requested path.
-        # However, since we are requesting a specific parameter, we hope to find the value easily.
-        # UNSURE: The exact return structure depends on instrumentserver version.
-        # We assume it returns {full_path: value} or {instrument: {param: value}}.
-        # For now, let's try to navigate or return the whole result if unsure.
-        
-        # If the result is a simple dictionary with the path as key (common in some versions)
         if isinstance(result, dict):
             if full_path in result:
                 return result[full_path]
+            
             # If it's nested {instrument: {param: value}}
             parts = full_path.split('.')
             curr = result

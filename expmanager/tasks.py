@@ -1,6 +1,10 @@
+"""
+Defines the Celery tasks for the expmanager app.
+Includes the `run_experiment_task` which is the entry point for background experiment execution.
+"""
 from celery import shared_task
 from expmanager.models import RunRequest
-from .engine import ExperimentEngine
+from orchestrator.engine import ExperimentEngine
 import traceback
 from django.utils import timezone
 
@@ -20,6 +24,9 @@ def run_experiment_task(self, run_id):
     try:
         engine.run()
         run_request.status = 'COMPLETED'
+    except InterruptedError:
+        run_request.status = 'CANCELLED'
+        engine.log("Experiment cancelled.")
     except Exception as e:
         run_request.status = 'FAILED'
         engine.log(f"Error: {str(e)}")

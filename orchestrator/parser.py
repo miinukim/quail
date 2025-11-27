@@ -1,3 +1,7 @@
+"""
+Lexer and Parser classes for the QuAIL custom experiment syntax.
+It is responsible for tokenizing the input code and generating an Abstract Syntax Tree (AST).
+"""
 import re
 
 class Token:

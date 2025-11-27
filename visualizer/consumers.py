@@ -1,3 +1,7 @@
+"""
+WebSocket consumers for the visualizer app.
+Handles real-time communication for experiment logs and data updates.
+"""
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 
@@ -31,4 +35,15 @@ class ExperimentConsumer(AsyncWebsocketConsumer):
             'type': 'log',
             'message': message,
             'level': level
+        }))
+
+    async def new_data(self, event):
+        params = event['params']
+        data = event['data']
+
+        # Send message to WebSocket
+        await self.send(text_data=json.dumps({
+            'type': 'data',
+            'params': params,
+            'data': data
         }))

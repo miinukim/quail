@@ -29,6 +29,7 @@ class RunRequest(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     priority = models.IntegerField(default=0)
+    data_file = models.CharField(max_length=255, blank=True, help_text="Path to HDF5 data file")
 
     def __str__(self):
         return f"Run {self.id}: {self.script.name} ({self.status})"

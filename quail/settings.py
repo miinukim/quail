@@ -47,7 +47,6 @@ INSTALLED_APPS = [
     'core',
     'expmanager',
     'orchestrator',
-    'driver_proxy',
     'visualizer',
 ]
 
