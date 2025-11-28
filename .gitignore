@@ -21,3 +21,10 @@ logs/
 
 # OS
 .DS_Store
+
+# Package build and distribution
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg

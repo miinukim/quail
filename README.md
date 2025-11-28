@@ -53,18 +53,50 @@ The system is divided into three Django apps, each with a specific responsibilit
 
 ### Installation
 
+#### Option 1: Install via pip (Recommended)
+
 1.  **Create and activate conda environment**:
     ```bash
     conda create -n ent python=3.10
     conda activate ent
     ```
 
-2.  **Install Dependencies**:
+2.  **Install QuAIL**:
+    ```bash
+    pip install -e .
+    ```
+
+3.  **Run automated setup**:
+    ```bash
+    quail-install
+    ```
+    
+    This will:
+    - Check Python version and Redis availability
+    - Install all dependencies
+    - Create necessary directories
+    - Run database migrations
+    - Optionally create a superuser
+
+4.  **Start Redis** (if not already running):
+    ```bash
+    redis-server
+    ```
+
+#### Option 2: Development Installation
+
+1.  **Create and activate conda environment**:
+    ```bash
+    conda create -n ent python=3.10
+    conda activate ent
+    ```
+
+2.  **Install dependencies manually**:
     ```bash
     pip install -r requirements.txt
     ```
 
-3.  **Run Migrations**:
+3.  **Run migrations**:
     ```bash
     python manage.py migrate
     ```
@@ -79,6 +111,8 @@ The system is divided into three Django apps, each with a specific responsibilit
 1.  **Start Django Web Server**:
     ```bash
     python manage.py runserver
+    # Or if installed via pip:
+    quail-manage runserver
     ```
 
 2.  **Start Celery Worker** (in separate terminal):

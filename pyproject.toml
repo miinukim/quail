@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quail-server"
+version = "0.1.0"
+description = "QuIQCL Automated Instrument Linking system - Django-based server for managing physics experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "QuIQCL Team"}
+]
+keywords = ["physics", "experiment", "automation", "qcodes", "instrument", "server"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: Django :: 4.2",
+]
+
+dependencies = [
+    "Django>=4.2",
+    "celery>=5.3",
+    "redis>=5.0",
+    "channels[daphne]>=4.0",
+    "channels-redis>=4.1",
+    "numpy",
+    "h5py",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-django",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/quail"
+Documentation = "https://github.com/yourusername/quail/blob/main/README.md"
+
+[project.scripts]
+quail-manage = "quail.cli:manage"
+quail-install = "quail.cli:install"
+
+[tool.setuptools]
+packages = ["quail", "expmanager", "orchestrator", "visualizer", "core"]
+
+[tool.setuptools.package-data]
+"*" = ["*.html", "*.css", "*.js", "*.txt", "*.md"]
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "quail.settings"
+python_files = ["test_*.py", "*_test.py"]
+testpaths = ["tests"]
