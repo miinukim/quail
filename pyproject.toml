@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quail-server"
 version = "0.1.0"
-description = "QuIQCL Automated Instrument Linking system - Django-based server for managing physics experiments"
+description = "QuIQCL Automated Instrument Linking system - Django-based server for managing QCoDeS experiments"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "QuIQCL Team"}
+    {name = "Minwoo Kim"}
 ]
 keywords = ["physics", "experiment", "automation", "qcodes", "instrument", "server"]
 classifiers = [
@@ -45,8 +45,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/quail"
-Documentation = "https://github.com/yourusername/quail/blob/main/README.md"
+Homepage = "https://github.com/miinukim/quail"
+Documentation = "https://github.com/miinukim/quail/blob/main/README.md"
 
 [project.scripts]
 quail-manage = "quail.cli:manage"
