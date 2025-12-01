@@ -28,7 +28,7 @@ The system is divided into three Django apps, each with a specific responsibilit
     - Handles data collection and persistence (HDF5).
     - Provides abort/interrupt capability.
 
-### 3. `visualizer` (Real-time Interface)
+### 3. `datahandler` (Data Handler)
 - **Role**: Real-time monitoring and data streaming.
 - **Responsibilities**:
     - Streams live logs and data points to frontend using WebSockets (Django Channels).

@@ -144,7 +144,7 @@ quail-server/
 │   └── ...
 ├── expmanager/            # Experiment management app
 ├── orchestrator/          # Execution engine app
-├── visualizer/            # Real-time interface app
+├── datahandler/           # Data handler app
 └── core/                  # Shared utilities
 ```
 

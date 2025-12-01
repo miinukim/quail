@@ -15,7 +15,7 @@ QuAIL is a Django-based experiment management system for experiments with device
                    ↓                        ↓
 ┌─────────────────────────────────┐  ┌──────────────────────────────┐
 │      Django REST Framework      │  │   Django Channels (ASGI)     │
-│         (expmanager)            │  │      (visualizer)            │
+│         (expmanager)            │  │      (datahandler)            │
 └────────────┬────────────────────┘  └──────────────────────────────┘
              │                                    ↑
              │ Triggers Celery Task               │ Real-time Updates
@@ -90,7 +90,7 @@ QuAIL is a Django-based experiment management system for experiments with device
   - `InstrumentClient`: ZMQ client for instrument communication
 - **No direct frontend access** - all requests go through `expmanager`
 
-#### c. `visualizer` (Real-time Communication)
+#### c. `datahandler` (Real-time Communication)
 - **Consumers**:
   - `ExperimentConsumer`: WebSocket handler for real-time updates
 - **Channels**: Django Channels for WebSocket support
@@ -250,7 +250,7 @@ for v in (from 0 to 5 step 0.1):
                    data: [[...], [...], [...], [...]]
                })
 
-12. WebSocket receives data [visualizer/consumers.py]
+12. WebSocket receives data [datahandler/consumers.py]
     └─ ExperimentConsumer.new_data(event)
         └─ Sends JSON to frontend:
             {
@@ -372,7 +372,7 @@ ExperimentScript: Script code storage
 1. **Separation of Concerns**:
    - `expmanager`: User interface, job scheduling
    - `orchestrator`: Execution engine, no frontend access
-   - `visualizer`: Real-time communication only
+   - `datahandler`: Real-time communication only
 
 2. **Asynchronous Execution**:
    - Celery workers prevent blocking web server
@@ -409,7 +409,7 @@ quail/
 │  ├─ processor.py      # VirtualProcessor
 │  ├─ parser.py         # Lexer & Parser
 │  └─ instrument_client.py  # ZMQ client
-├─ visualizer/          # Real-time communication
+├─ datahandler/          # Real-time communication
 │  └─ consumers.py      # WebSocket consumers
 ├─ data/                # HDF5 experiment data (gitignored)
 ├─ logs/                # Experiment logs (gitignored)
