@@ -11,7 +11,7 @@ This is the recommended method for development and testing.
 cd /path/to/quail
 
 # Create and activate conda environment
-conda create -n ent python=3.10
+conda create -n ent python=3.12
 conda activate ent
 
 # Install in editable mode
@@ -33,7 +33,7 @@ quail-install
 ### Method 3: Install from Git Repository
 
 ```bash
-pip install git+https://github.com/yourusername/quail.git
+pip install git+https://github.com/miinukim/quail.git
 quail-install
 ```
 
