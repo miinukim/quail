@@ -11,13 +11,13 @@ recursive-include expmanager/templates *
 recursive-include expmanager/static *
 recursive-include orchestrator/templates *
 recursive-include orchestrator/static *
-recursive-include visualizer/templates *
-recursive-include visualizer/static *
+recursive-include datahandler/templates *
+recursive-include datahandler/static *
 
 # Include migrations
 recursive-include expmanager/migrations *.py
 recursive-include orchestrator/migrations *.py
-recursive-include visualizer/migrations *.py
+recursive-include datahandler/migrations *.py
 
 # Exclude compiled Python files
 global-exclude __pycache__

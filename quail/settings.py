@@ -47,7 +47,7 @@ INSTALLED_APPS = [
     'core',
     'expmanager',
     'orchestrator',
-    'visualizer',
+    'datahandler',
 ]
 
 MIDDLEWARE = [

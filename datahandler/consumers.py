@@ -1,5 +1,5 @@
 """
-WebSocket consumers for the visualizer app.
+WebSocket consumers for the datahandler app.
 Handles real-time communication for experiment logs and data updates.
 """
 import json

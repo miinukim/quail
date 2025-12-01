@@ -53,7 +53,7 @@ quail-manage = "quail.cli:manage"
 quail-install = "quail.cli:install"
 
 [tool.setuptools]
-packages = ["quail", "expmanager", "orchestrator", "visualizer", "core"]
+packages = ["quail", "expmanager", "orchestrator", "datahandler", "core"]
 
 [tool.setuptools.package-data]
 "*" = ["*.html", "*.css", "*.js", "*.txt", "*.md"]

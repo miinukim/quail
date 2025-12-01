@@ -35,8 +35,8 @@ QuAIL is a Django-based experiment management system for experiments with device
 │  │  │   InstrumentClient       │───→│  InstrumentServer    │     │   │
 │  │  │   (ZMQ REQ Client)       │    │   (ZMQ REP Server)   │     │   │
 │  │  └──────────────────────────┘    └──────────┬───────────┘     │   │
-│  │                                              │                │   │
-│  │                                              ↓                │   │
+│  │                                             │                 │   │
+│  │                                             ↓                 │   │
 │  │                                   ┌────────────────────────┐  │   │
 │  │                                   │  QCoDeS Instruments    │  │   │
 │  │                                   │  (Keithley, DACs, etc) │  │   │
@@ -49,7 +49,7 @@ QuAIL is a Django-based experiment management system for experiments with device
 │                      Data Persistence Layer                         │
 │  ┌──────────────────────┐  ┌──────────────────────────────────────┐ │
 │  │  PostgreSQL/SQLite   │  │        HDF5 Files                    │ │
-│  │  - ExperimentRun        │  │  - Experiment data (4, N, M)         │ │
+│  │  - ExperimentRun     │  │  - Experiment data (4, N, M)         │ │
 │  │  - ExperimentScript  │  │  - Parameter values                  │ │
 │  │  - RunLog            │  │  - Metadata                          │ │
 │  └──────────────────────┘  └──────────────────────────────────────┘ │
