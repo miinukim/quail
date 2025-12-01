@@ -18,6 +18,8 @@ celerybeat.pid
 # Data and logs
 data/
 logs/
+user_fpga/
+user_scripts/
 
 # OS
 .DS_Store
@@ -28,8 +30,3 @@ dist/
 *.egg-info/
 .eggs/
 *.egg
-
-# Development and tests
-INSTALLATION_TEST_REPORT.md
-mock_instrumentserver.py
-PACKAGE_SUMMARY.md
