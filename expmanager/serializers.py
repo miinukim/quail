@@ -7,6 +7,8 @@ class ExperimentScriptSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class ExperimentRunSerializer(serializers.ModelSerializer):
+    script_name = serializers.CharField(source='script.name', read_only=True)
+
     class Meta:
         model = ExperimentRun
         fields = '__all__'

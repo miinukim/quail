@@ -43,6 +43,44 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         
         return Response({'status': 'Experiment aborted'})
 
+    @action(detail=True, methods=['get'])
+    def get_data(self, request, pk=None):
+        experiment_run = self.get_object()
+        if not experiment_run.data_file or not os.path.exists(experiment_run.data_file):
+            return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        try:
+            import h5py
+            import numpy as np
+            
+            with h5py.File(experiment_run.data_file, 'r') as f:
+                # Read params and data
+                if 'params' not in f or 'data' not in f:
+                     return Response({'points': [], 'total_points': 0})
+
+                params = f['params'][:]
+                data = f['data'][:]
+                
+                num_saves = params.shape[1]
+                points = []
+                
+                # Limit to last 100 points
+                start_idx = max(0, num_saves - 100)
+                
+                for i in range(start_idx, num_saves):
+                    p = params[:, i].tolist()
+                    d = data[:, :, i].tolist()
+                    points.append({
+                        'params': p,
+                        'data': d,
+                        'index': i
+                    })
+                    
+                return Response({'points': points, 'total_points': num_saves})
+                
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 import os
 from django.conf import settings
 
