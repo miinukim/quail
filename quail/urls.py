@@ -18,6 +18,7 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from expmanager.views import ExperimentScriptViewSet, ExperimentRunViewSet, RunLogViewSet, FileViewSet
+from core.auth_views import CustomAuthToken, logout_view
 
 # REST API Router
 router = DefaultRouter()
@@ -29,4 +30,6 @@ router.register(r'files', FileViewSet, basename='file')
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include(router.urls)),
+    path('api/login/', CustomAuthToken.as_view(), name='api_login'),
+    path('api/logout/', logout_view, name='api_logout'),
 ]
