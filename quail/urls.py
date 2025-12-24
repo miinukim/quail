@@ -17,7 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from expmanager.views import ExperimentScriptViewSet, ExperimentRunViewSet, RunLogViewSet, FileViewSet
+from expmanager.views import ExperimentScriptViewSet, ExperimentRunViewSet, RunLogViewSet, FileViewSet, DatasetViewSet
 from core.auth_views import CustomAuthToken, logout_view
 
 # REST API Router
@@ -26,6 +26,7 @@ router.register(r'scripts', ExperimentScriptViewSet, basename='script')
 router.register(r'runs', ExperimentRunViewSet, basename='run')
 router.register(r'logs', RunLogViewSet, basename='log')
 router.register(r'files', FileViewSet, basename='file')
+router.register(r'datasets', DatasetViewSet, basename='dataset')
 
 urlpatterns = [
     path('admin/', admin.site.urls),
