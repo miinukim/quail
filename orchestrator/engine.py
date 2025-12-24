@@ -2,9 +2,10 @@
 This file defines the ExperimentEngine class, which executes the experiment script.
 It handles logging, data saving, and invoking the VirtualProcessor to run the experiment script.
 """
+from django.utils import timezone
 import time
 import os
-from expmanager.models import RunLog
+from expmanager.models import RunLog, Dataset
 from .instrument_client import InstrumentClient
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
@@ -18,7 +19,8 @@ class ExperimentEngine:
         self.client = InstrumentClient()
         self.channel_layer = get_channel_layer()
         self.group_name = f"run_{experiment_run.id}"
-        self.h5file = None  # HDF5 file handle, opened by init_data()
+        self.h5file = None  # current HDF5 file handle
+        self.current_dataset = None # current Dataset model instance
 
     def log(self, message, level='INFO'):
         RunLog.objects.create(
@@ -38,48 +40,67 @@ class ExperimentEngine:
 
     def init_data(self, schema):
         """
-        Initialize the data file and datasets based on schema.
-        schema: {'param_axes': [...], 'num_data': N}
-        
-        Creates:
-        - data: (4, N, num_saves) where N is determined by first save
-        - params: (num_params, num_saves) where each column is one parameter set
-        
-        Opens the HDF5 file and keeps it open for the duration of the experiment.
+        Initialize a new dataset artifact.
+        schema: {'param_axes': [...], 'num_data': N, 'name': 'optional_name'}
         """
+        # Close previous file if open
+        self.close_data_file()
+
         # Ensure data directory exists
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         data_dir = os.path.join(base_dir, 'data')
         os.makedirs(data_dir, exist_ok=True)
         
-        # File path: data/run_<id>.h5
-        file_path = os.path.join(data_dir, f"run_{self.experiment_run.id}.h5")
+        # Create Dataset Entry
+        ds_name = schema.get('name', f"Dataset_{timezone.now().strftime('%H%M%S')}")
         
-        # Update model
-        self.experiment_run.data_file = file_path
-        self.experiment_run.save(update_fields=['data_file'])
+        # We need to save the Dataset to get an ID for the filename
+        self.current_dataset = Dataset.objects.create(
+            experiment_run=self.experiment_run,
+            name=ds_name,
+            file_path="",  # placeholder
+            metadata=schema
+        )
+        
+        # Determine Filename
+        filename = f"run_{self.experiment_run.id}_ds_{self.current_dataset.id}.h5"
+        file_path = os.path.join(data_dir, filename)
+        
+        # Update Dataset path
+        self.current_dataset.file_path = file_path
+        self.current_dataset.save()
         
         num_data = schema['num_data']
         num_params = len(schema['param_axes'])
         
         try:
-            # Open file and keep it open
+            # Open file 
             self.h5file = h5py.File(file_path, 'w')
             
             # Create 3D dataset for data: (num_data, N, num_saves)
-            # N will be determined by first save, so we start with a placeholder
-            # We'll resize on first save
             self.h5file.create_dataset('data', shape=(num_data, 0, 0), maxshape=(num_data, None, None), dtype='f')
             
             # Create 2D dataset for params: (num_params, num_saves)
             self.h5file.create_dataset('params', shape=(num_params, 0), maxshape=(num_params, None), dtype='f')
             
-            # Save metadata as attributes
+            # Save metadata
             self.h5file.attrs['param_axes'] = schema['param_axes']
             self.h5file.attrs['num_data'] = num_data
-            self.h5file.attrs['data_width'] = -1  # Will be set on first save
+            self.h5file.attrs['data_width'] = -1
             
-            self.log(f"Initialized data file: {file_path}")
+            self.log(f"Initialized dataset '{ds_name}': {filename}")
+            
+            # Notify frontend of new dataset
+            async_to_sync(self.channel_layer.group_send)(
+                self.group_name,
+                {
+                    'type': 'dataset_created',
+                    'dataset_id': self.current_dataset.id,
+                    'name': ds_name,
+                    'file_path': file_path
+                }
+            )
+
         except Exception as e:
             self.log(f"Error initializing HDF5: {e}", level='ERROR')
             if self.h5file:
@@ -150,6 +171,7 @@ class ExperimentEngine:
             self.group_name,
             {
                 'type': 'new_data',
+                'dataset_id': self.current_dataset.id,
                 'params': params,
                 'data': [list(d) for d in data]
             }
