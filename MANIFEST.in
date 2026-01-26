@@ -1,0 +1,33 @@
+# Include documentation
+include README.md
+include LICENSE
+recursive-include docs *.md
+
+# Include requirements files
+include requirements.txt
+
+# Include Django static and template files
+recursive-include expmanager/templates *
+recursive-include expmanager/static *
+recursive-include orchestrator/templates *
+recursive-include orchestrator/static *
+recursive-include datahandler/templates *
+recursive-include datahandler/static *
+
+# Include migrations
+recursive-include expmanager/migrations *.py
+recursive-include orchestrator/migrations *.py
+recursive-include datahandler/migrations *.py
+
+# Exclude compiled Python files
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .DS_Store
+global-exclude *.swp
+
+# Exclude development files
+exclude .gitignore
+exclude db.sqlite3
+exclude install.py
+recursive-exclude logs *
+recursive-exclude data *
