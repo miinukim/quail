@@ -19,6 +19,7 @@ class RunStatusConsumer(AsyncWebsocketConsumer):
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
         self.period_ms = 500
         self._running = True
+        # This consumer currently simulates status updates.
         await self.accept()
         self._task = asyncio.create_task(self._loop())
 
@@ -61,6 +62,7 @@ class RunLogConsumer(AsyncWebsocketConsumer):
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
         self.period_ms = 600
         self._running = True
+        # This consumer currently simulates log output.
         await self.accept()
         self._task = asyncio.create_task(self._loop())
 
@@ -110,6 +112,7 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
         self._running = True
         self._index = 0
         self._op = "append"
+        # This consumer currently streams synthetic points.
         await self.accept()
         self._task = asyncio.create_task(self._loop())
 

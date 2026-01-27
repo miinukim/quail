@@ -1,3 +1,6 @@
+"""
+Channel routing for WebSocket streams (runs, datasets, TTL status).
+"""
 from django.urls import re_path
 from . import consumers
 

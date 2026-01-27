@@ -1,3 +1,7 @@
+"""
+ExperimentScript/Run/Dataset/RunLog models.
+These represent the core execution and data artifacts.
+"""
 from django.db import models
 from django.contrib.auth.models import User
 
@@ -99,3 +103,20 @@ class RunLog(models.Model):
 
     def __str__(self):
         return f"[{self.timestamp}] {self.level}: {self.message}"
+
+
+class Archive(models.Model):
+    """
+    Snapshot of a run with selected datasets and metadata.
+    """
+    title = models.CharField(max_length=255)
+    experiment_run = models.ForeignKey(ExperimentRun, related_name='archives', on_delete=models.CASCADE)
+    datasets = models.JSONField(default=list, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    note = models.TextField(blank=True)
+    snapshot_mode = models.CharField(max_length=32, blank=True, default="")
+    author = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Archive {self.id} (Run {self.experiment_run_id})"

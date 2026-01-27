@@ -17,7 +17,7 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from expmanager.views import ExperimentScriptViewSet, ExperimentRunViewSet, RunLogViewSet, FileViewSet, DatasetViewSet
+from expmanager.views import ExperimentScriptViewSet, ExperimentRunViewSet, RunLogViewSet, FileViewSet, DatasetViewSet, ArchiveViewSet
 from panels.views import PanelViewSet, PanelConfigViewSet
 from core.auth_views import CustomAuthToken, logout_view
 from core.ttl_views import ttl_devices, ttl_level, ttl_override
@@ -29,6 +29,7 @@ router.register(r'runs', ExperimentRunViewSet, basename='run')
 router.register(r'logs', RunLogViewSet, basename='log')
 router.register(r'files', FileViewSet, basename='file')
 router.register(r'datasets', DatasetViewSet, basename='dataset')
+router.register(r'archives', ArchiveViewSet, basename='archive')
 router.register(r'panels', PanelViewSet, basename='panel')
 router.register(r'panel-configs', PanelConfigViewSet, basename='panel-config')
 

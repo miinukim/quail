@@ -1,5 +1,8 @@
+"""
+DRF serializers for experiment scripts, runs, datasets, and logs.
+"""
 from rest_framework import serializers
-from .models import ExperimentScript, ExperimentRun, RunLog, Dataset
+from .models import ExperimentScript, ExperimentRun, RunLog, Dataset, Archive
 
 class ExperimentScriptSerializer(serializers.ModelSerializer):
     class Meta:
@@ -44,4 +47,10 @@ class ExperimentRunListSerializer(serializers.ModelSerializer):
 class RunLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = RunLog
+        fields = '__all__'
+
+
+class ArchiveSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Archive
         fields = '__all__'

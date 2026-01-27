@@ -1,3 +1,6 @@
+"""
+DRF serializers for panels and panel configs.
+"""
 from rest_framework import serializers
 from .models import Panel, PanelConfig
 

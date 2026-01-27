@@ -158,6 +158,89 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Logging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '[{asctime}] {levelname} {name} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '[{levelname}] {name}: {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+            'level': 'WARNING',
+        },
+        'important_console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+            'level': 'INFO',
+        },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'django.log'),
+            'formatter': 'verbose',
+            'level': 'INFO',
+        },
+        'important_file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'important.log'),
+            'formatter': 'verbose',
+            'level': 'INFO',
+        },
+        'error_file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'error.log'),
+            'formatter': 'verbose',
+            'level': 'ERROR',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console', 'file', 'error_file'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+        'expmanager': {
+            'handlers': ['file', 'error_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'orchestrator': {
+            'handlers': ['file', 'error_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'datahandler': {
+            'handlers': ['file', 'error_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'core': {
+            'handlers': ['file', 'error_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'panels': {
+            'handlers': ['file', 'error_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'quail.inspect': {
+            'handlers': ['important_console', 'important_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
+
 # CORS Settings (for React frontend)
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",

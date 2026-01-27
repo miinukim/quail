@@ -1,4 +1,11 @@
+"""
+Panels API: persistent panel definitions, config snapshots, and run scheduling.
+Panels allow users to reuse scripts with saved parameters and scheduling defaults.
+"""
 from rest_framework import viewsets, status
+import logging
+import os
+from django.conf import settings
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -6,7 +13,15 @@ from .models import Panel, PanelConfig
 from .serializers import PanelSerializer, PanelCreateSerializer
 from expmanager.models import ExperimentScript, ExperimentRun
 from expmanager.tasks import run_experiment_task
+from orchestrator.inspector import inspect_script
 
+
+DEFAULT_PANEL_SCHEMA = {
+    'detuning': {'type': 'float', 'default': 0.0, 'min': -100.0, 'max': 100.0, 'unit': 'MHz'},
+    'shots': {'type': 'int', 'default': 100, 'min': 1, 'max': 100000},
+    'use_cooling': {'type': 'bool', 'default': True},
+    'sweep_points': {'type': 'iterable', 'default': [0.0, 0.5, 1.0]},
+}
 
 def panel_default_schedule():
     return {
@@ -28,7 +43,26 @@ def normalize_priority(value, default=3):
         return mapping.get(value.upper(), default)
     return default
 
+logger = logging.getLogger("quail.inspect")
+
+def resolve_script_path(path):
+    if not path:
+        return None
+    import os
+    if os.path.isabs(path) and os.path.exists(path):
+        return path
+    # Try relative to BASE_DIR and user_scripts
+    base = settings.BASE_DIR
+    candidate = os.path.join(base, path)
+    if os.path.exists(candidate):
+        return candidate
+    candidate = os.path.join(base, "user_scripts", path)
+    if os.path.exists(candidate):
+        return candidate
+    return path
+
 def build_panel_fields(parameters_schema):
+    # Map schema types to simple UI control hints.
     fields = []
     if not isinstance(parameters_schema, dict):
         return fields
@@ -63,23 +97,42 @@ class PanelViewSet(viewsets.ModelViewSet):
         serializer = PanelCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         panel = serializer.save(author=request.user if request.user.is_authenticated else None)
+        logger.info("Panel create: panel_id=%s script_path=%s", panel.panel_id, panel.script_path)
 
-        # Try to inspect the script if it exists in ExperimentScript records
+        # Inspect script on create to infer parameter schema.
+        # Prefer the panel's script_path directly (no DB record required).
+        inspected = False
         try:
-            script = ExperimentScript.objects.filter(script_path=panel.script_path).first()
-            if script:
-                # Placeholder for script inspection (no-op for now)
-                pass
+            import os
+            script_path = resolve_script_path(panel.script_path)
+            if not script_path:
+                script = ExperimentScript.objects.filter(script_path=panel.script_path).first()
+                script_path = resolve_script_path(script.script_path) if script else None
+            if not script_path:
+                logger.info("Panel inspection (create) skipped: no script_path panel_id=%s", panel.panel_id)
+            if script_path and os.path.exists(script_path):
+                with open(script_path, 'r') as f:
+                    code = f.read()
+                inspection = inspect_script(code)
+                if isinstance(inspection, dict):
+                    schema = inspection.get('parameters_schema') or {}
+                    param_values = inspection.get('param_values') or {}
+                    inspected = True
+                    logger.info("Panel inspection (create) path=%s schema=%s param_values=%s", script_path, schema, param_values)
+                    if schema:
+                        panel.parameters_schema = schema
+                    if param_values:
+                        panel.param_values = param_values
+                    if panel.parameters_schema:
+                        panel.panel_fields = build_panel_fields(panel.parameters_schema)
+                    if schema or param_values:
+                        panel.save(update_fields=['parameters_schema', 'param_values', 'panel_fields', 'updated_at'])
         except Exception:
-            pass
+            logger.exception("Panel inspection (create) failed for path=%s", panel.script_path)
 
-        if not panel.parameters_schema:
-            panel.parameters_schema = {
-                'detuning': {'type': 'float', 'default': 0.0, 'min': -100.0, 'max': 100.0, 'unit': 'MHz'},
-                'shots': {'type': 'int', 'default': 100, 'min': 1, 'max': 100000},
-                'use_cooling': {'type': 'bool', 'default': True},
-                'sweep_points': {'type': 'iterable', 'default': [0.0, 0.5, 1.0]},
-            }
+        # Fallback schema only when no script path is available.
+        if not panel.parameters_schema and not inspected and not panel.script_path:
+            panel.parameters_schema = DEFAULT_PANEL_SCHEMA
             panel.save(update_fields=['parameters_schema', 'updated_at'])
 
         if not panel.panel_fields and panel.parameters_schema:
@@ -100,6 +153,7 @@ class PanelViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='from-config')
     def from_config(self, request):
+        # Create a new panel instance from a stored config snapshot.
         config_id = request.data.get('config_id')
         if not config_id:
             return Response({'error': 'config_id required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -136,6 +190,7 @@ class PanelViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='inspect-classes')
     def inspect_classes(self, request):
+        # Placeholder: replace with real script inspection
         script_path = request.data.get('script_path')
         if not script_path:
             return Response({'error': 'script_path required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -144,11 +199,8 @@ class PanelViewSet(viewsets.ModelViewSet):
         return Response({'script_path': script_path, 'classes': classes}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'])
-    def list_panels(self, request):
-        # legacy action - provide same output as list()
-        return self.list(request)
-
-    def list(self, request):
+    def listPanels(self, request):
+        # Basic filter support for panels.
         qs = self.get_queryset()
         script_path = request.query_params.get('script_path')
         tag = request.query_params.get('tag')
@@ -167,7 +219,33 @@ class PanelViewSet(viewsets.ModelViewSet):
         return Response({'items': items, 'next_cursor': None})
 
     def retrieve(self, request, panel_id=None):
+        # Return panel plus expanded config metadata for the UI.
         panel = self.get_object()
+        logger.info("Panel retrieve: panel_id=%s script_path=%s", panel.panel_id, panel.script_path)
+        # If panel still has the default template schema, attempt re-inspection.
+        try:
+            if panel.script_path and (not panel.parameters_schema or panel.parameters_schema == DEFAULT_PANEL_SCHEMA):
+                resolved = resolve_script_path(panel.script_path)
+                if resolved and os.path.exists(resolved):
+                    with open(resolved, 'r') as f:
+                        code = f.read()
+                    inspection = inspect_script(code)
+                    if isinstance(inspection, dict):
+                        schema = inspection.get('parameters_schema') or {}
+                        param_values = inspection.get('param_values') or {}
+                        logger.info("Panel inspection (retrieve) path=%s schema=%s param_values=%s", resolved, schema, param_values)
+                        if schema:
+                            panel.parameters_schema = schema
+                        if param_values:
+                            panel.param_values = param_values
+                        if panel.parameters_schema:
+                            panel.panel_fields = build_panel_fields(panel.parameters_schema)
+                        if schema or param_values:
+                            panel.save(update_fields=['parameters_schema', 'param_values', 'panel_fields', 'updated_at'])
+                else:
+                    logger.info("Panel inspection (retrieve) skipped: path not found=%s", panel.script_path)
+        except Exception:
+            logger.exception("Panel inspection (retrieve) failed for path=%s", panel.script_path)
         data = PanelSerializer(panel).data
         if panel.config_id:
             cfg = PanelConfig.objects.filter(config_id=panel.config_id).first()
@@ -189,6 +267,10 @@ class PanelViewSet(viewsets.ModelViewSet):
         schedule_type = body.get('schedule_type', panel.schedule_defaults.get('schedule_type', 'NOW'))
         scheduled_at = body.get('scheduled_at', panel.schedule_defaults.get('scheduled_at'))
         interval_min = body.get('interval_min', panel.schedule_defaults.get('interval_min'))
+
+        if isinstance(param_values, dict):
+            panel.param_values = param_values
+            panel.save(update_fields=['param_values', 'updated_at'])
 
         # Create ExperimentRun
         user_for_run = request.user if request.user.is_authenticated else panel.author
@@ -226,6 +308,22 @@ class PanelViewSet(viewsets.ModelViewSet):
 class PanelConfigViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
     lookup_field = 'config_id'
+
+    def partial_update(self, request, pk=None, config_id=None):
+        try:
+            cfg = PanelConfig.objects.get(config_id=config_id or pk)
+        except PanelConfig.DoesNotExist:
+            return Response({'error': 'config not found'}, status=status.HTTP_404_NOT_FOUND)
+        title = request.data.get('title')
+        if title is not None:
+            cfg.title = title
+        cfg.updated_by = request.user if request.user.is_authenticated else None
+        cfg.save(update_fields=['title', 'updated_by', 'updated_at'])
+        return Response({
+            'config_id': cfg.config_id,
+            'updated_at': cfg.updated_at.isoformat().replace('+00:00', 'Z'),
+            'updated_by': {'user_id': cfg.updated_by_id, 'username': cfg.updated_by.username if cfg.updated_by else None},
+        })
 
     def list(self, request):
         qs = PanelConfig.objects.all().order_by('-updated_at')
@@ -291,35 +389,44 @@ class PanelConfigViewSet(viewsets.ViewSet):
         )
         return Response({'config_id': cfg.config_id, 'created_at': cfg.created_at.isoformat().replace('+00:00', 'Z')}, status=status.HTTP_200_OK)
 
-    def destroy(self, request, pk=None):
+    def destroy(self, request, pk=None, config_id=None):
         try:
-            cfg = PanelConfig.objects.get(config_id=pk)
+            cfg = PanelConfig.objects.get(config_id=config_id or pk)
         except PanelConfig.DoesNotExist:
             return Response(status=status.HTTP_204_NO_CONTENT)
         cfg.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'], url_path='apply-panel')
-    def apply_panel(self, request, pk=None):
+    def apply_panel(self, request, pk=None, config_id=None):
+        cfg_id = config_id or pk
         try:
-            cfg = PanelConfig.objects.get(config_id=pk)
+            cfg = PanelConfig.objects.get(config_id=cfg_id)
         except PanelConfig.DoesNotExist:
             return Response({'error': 'config not found'}, status=status.HTTP_404_NOT_FOUND)
 
         panel_id = request.data.get('panel_id')
         mode = request.data.get('mode', 'overwrite')
         fields = request.data.get('fields') or []
+        req_param_values = request.data.get('param_values')
+        req_queue_defaults = request.data.get('queue_defaults') or request.data.get('schedule_defaults')
 
         panel = Panel.objects.filter(panel_id=panel_id).first()
         if not panel:
             return Response({'error': 'panel not found'}, status=status.HTTP_404_NOT_FOUND)
 
         if mode == 'overwrite':
-            snapshot = cfg.snapshot or {}
+            snapshot = cfg.snapshot if isinstance(cfg.snapshot, dict) else {}
+            panel_params = panel.param_values if isinstance(panel.param_values, dict) else {}
+            panel_defaults = panel.schedule_defaults if isinstance(panel.schedule_defaults, dict) else panel_default_schedule()
+            if isinstance(req_param_values, dict):
+                panel_params = req_param_values
+            if isinstance(req_queue_defaults, dict):
+                panel_defaults = req_queue_defaults
             if not fields or 'param_values' in fields:
-                snapshot['param_values'] = panel.param_values or {}
+                snapshot['param_values'] = panel_params
             if not fields or 'queue_defaults' in fields:
-                snapshot['queue_defaults'] = panel.schedule_defaults or panel_default_schedule()
+                snapshot['queue_defaults'] = panel_defaults
             snapshot.setdefault('script_path', panel.script_path)
             snapshot.setdefault('class_name', panel.class_name)
             cfg.snapshot = snapshot

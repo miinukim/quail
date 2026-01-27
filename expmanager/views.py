@@ -1,10 +1,14 @@
+"""
+REST API endpoints for scripts, runs, logs, datasets, and file browsing.
+This is the main entry point for the frontend to manage experiment lifecycle.
+"""
 from django.shortcuts import render
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from .models import ExperimentScript, ExperimentRun, RunLog, Dataset
-from .serializers import ExperimentScriptSerializer, ExperimentRunSerializer, ExperimentRunListSerializer, RunLogSerializer, DatasetSerializer
+from .models import ExperimentScript, ExperimentRun, RunLog, Dataset, Archive
+from .serializers import ExperimentScriptSerializer, ExperimentRunSerializer, ExperimentRunListSerializer, RunLogSerializer, DatasetSerializer, ArchiveSerializer
 from .tasks import run_experiment_task
 import h5py
 import numpy as np
@@ -17,6 +21,7 @@ class ExperimentScriptViewSet(viewsets.ModelViewSet):
     serializer_class = ExperimentScriptSerializer
 
     def create(self, request, *args, **kwargs):
+        # Support inline script content by writing it to user_scripts and storing path.
         # Extract arbitrary code content not in model
         data = request.data.copy()
         script_code = data.pop('script_code', None)
@@ -60,6 +65,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         return None
 
     def list(self, request, *args, **kwargs):
+        # Lightweight filtering/pagination for the runs list.
         qs = self.get_queryset()
         status_q = request.query_params.get('status')
         author_id = request.query_params.get('author_id')
@@ -83,6 +89,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         return Response({'items': serializer.data, 'next_cursor': None})
 
     def create(self, request, *args, **kwargs):
+        # Allow panel_id-based runs and normalize priority/user fields.
         data = request.data.copy()
         if request.user and request.user.is_authenticated and 'user' not in data:
             data['user'] = request.user.id
@@ -144,6 +151,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def abort(self, request, pk=None):
+        # Simple status-based abort; worker cancellation is a TODO.
         experiment_run = self.get_object()
         if experiment_run.status not in ['QUEUED', 'RUNNING']:
              return Response({'status': f'Experiment is in {experiment_run.status} state, cannot abort'}, status=status.HTTP_400_BAD_REQUEST)
@@ -175,6 +183,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='logs')
     def run_logs(self, request, pk=None):
+        # Return full log history for a run.
         experiment_run = self.get_object()
         logs = experiment_run.logs.order_by('timestamp').all()
         serializer = RunLogSerializer(logs, many=True)
@@ -182,6 +191,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path=r'datasets/(?P<dataset_name>[^/]+)/meta')
     def dataset_meta(self, request, pk=None, dataset_name=None):
+        # Return dataset metadata; attempts to read HDF5 shape/type when available.
         experiment_run = self.get_object()
         try:
             dataset = experiment_run.datasets.get(name=dataset_name)
@@ -332,6 +342,122 @@ class RunLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     queryset = RunLog.objects.all()
     serializer_class = RunLogSerializer
+
+
+class ArchiveViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    queryset = Archive.objects.all().order_by('-created_at')
+    serializer_class = ArchiveSerializer
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        tag = request.query_params.get('tag')
+        limit = request.query_params.get('limit')
+        if tag:
+            qs = qs.filter(tags__contains=[tag])
+        if limit:
+            try:
+                qs = qs[: int(limit)]
+            except Exception:
+                pass
+        items = []
+        for a in qs:
+            items.append({
+                'archive_id': a.id,
+                'title': a.title,
+                'rid': a.experiment_run_id,
+                'datasets': a.datasets or [],
+                'tags': a.tags or [],
+                'note': a.note,
+                'snapshot_mode': a.snapshot_mode,
+                'author': {'user_id': a.author_id, 'username': a.author.username if a.author else None},
+                'created_at': a.created_at.isoformat().replace('+00:00', 'Z')
+            })
+        return Response({'items': items, 'next_cursor': None})
+
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
+        rid = data.get('rid') or data.get('experiment_run')
+        if not rid:
+            return Response({'error': 'rid required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            run = ExperimentRun.objects.get(id=int(rid))
+        except Exception:
+            return Response({'error': 'run not found'}, status=status.HTTP_404_NOT_FOUND)
+        archive = Archive.objects.create(
+            title=data.get('title') or f"Run {run.id} Archive",
+            experiment_run=run,
+            datasets=data.get('datasets') or [],
+            tags=data.get('tags') or [],
+            note=data.get('note', ''),
+            snapshot_mode=data.get('snapshot_mode', ''),
+            author=request.user if request.user.is_authenticated else None
+        )
+        return Response({'archive_id': archive.id, 'created_at': archive.created_at.isoformat().replace('+00:00', 'Z')}, status=status.HTTP_200_OK)
+
+    def retrieve(self, request, pk=None):
+        try:
+            a = Archive.objects.get(id=pk)
+        except Archive.DoesNotExist:
+            return Response({'error': 'archive not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({
+            'archive_id': a.id,
+            'title': a.title,
+            'rid': a.experiment_run_id,
+            'datasets': a.datasets or [],
+            'tags': a.tags or [],
+            'note': a.note,
+            'snapshot_mode': a.snapshot_mode,
+            'author': {'user_id': a.author_id, 'username': a.author.username if a.author else None},
+            'created_at': a.created_at.isoformat().replace('+00:00', 'Z')
+        })
+
+    def partial_update(self, request, pk=None):
+        try:
+            a = Archive.objects.get(id=pk)
+        except Archive.DoesNotExist:
+            return Response({'error': 'archive not found'}, status=status.HTTP_404_NOT_FOUND)
+        title = request.data.get('title')
+        if title is not None:
+            a.title = title
+        a.save(update_fields=['title'])
+        return Response({
+            'archive_id': a.id,
+            'title': a.title,
+            'rid': a.experiment_run_id,
+            'datasets': a.datasets or [],
+            'tags': a.tags or [],
+            'note': a.note,
+            'snapshot_mode': a.snapshot_mode,
+            'author': {'user_id': a.author_id, 'username': a.author.username if a.author else None},
+            'created_at': a.created_at.isoformat().replace('+00:00', 'Z')
+        })
+
+    @action(detail=True, methods=['get'], url_path=r'datasets/(?P<dataset_name>[^/]+)/data')
+    def dataset_data(self, request, pk=None, dataset_name=None):
+        try:
+            a = Archive.objects.get(id=pk)
+        except Archive.DoesNotExist:
+            return Response({'error': 'archive not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Reuse run dataset data for now (archive is a snapshot reference).
+        run = a.experiment_run
+        try:
+            dataset = run.datasets.get(name=dataset_name)
+        except Dataset.DoesNotExist:
+            if dataset_name == 'live':
+                points = [[i, random.random()] for i in range(20)]
+                return Response({'archive_id': a.id, 'dataset_id': 'live', 'name': 'live', 'data': points})
+            return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
+        if not dataset.file_path or not os.path.exists(dataset.file_path):
+            return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            with h5py.File(dataset.file_path, 'r') as f:
+                if 'data' not in f:
+                    return Response({'error': 'Data not present in file'}, status=status.HTTP_404_NOT_FOUND)
+                arr = np.array(f['data'])
+                return Response({'archive_id': a.id, 'dataset_id': f"ds_{dataset.id}", 'name': dataset.name, 'data': arr.tolist()})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class FileViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]

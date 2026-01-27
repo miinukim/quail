@@ -1,3 +1,7 @@
+"""
+Simple TTL control endpoints backed by in-memory state.
+Used by the UI to read/write TTL levels and overrides.
+"""
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -7,12 +11,14 @@ from .ttl_state import TTL_DEVICES, TTL_STATE
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def ttl_devices(request):
+    # Return configured TTL device list.
     return Response({"devices": TTL_DEVICES})
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def ttl_level(request):
+    # Update TTL levels for multiple devices in a single request.
     devices = request.data.get("devices") or []
     levels = request.data.get("levels") or []
     if not isinstance(devices, list) or not isinstance(levels, list) or len(devices) != len(levels):
@@ -27,6 +33,7 @@ def ttl_level(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def ttl_override(request):
+    # Enable/disable overrides for multiple devices.
     devices = request.data.get("devices") or []
     values = request.data.get("values") or []
     if not isinstance(devices, list) or not isinstance(values, list) or len(devices) != len(values):

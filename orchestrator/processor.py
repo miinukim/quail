@@ -115,11 +115,46 @@ class VirtualProcessor:
             self.context['check_abort']()
 
         stype = stmt['type']
+
+        def is_literal(node):
+            if isinstance(node, (int, float, str)):
+                return True
+            if isinstance(node, tuple):
+                return all(is_literal(v) for v in node)
+            if isinstance(node, dict) and node.get('type') == 'TUPLE':
+                return all(is_literal(v) for v in node.get('items', []))
+            return False
+
+        def coerce_param_value(dtype, value, name):
+            if dtype is None:
+                return value
+            if dtype == 'int':
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise ValueError(f"param '{name}' expects int value")
+                return value
+            if dtype == 'float':
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"param '{name}' expects float value")
+                return float(value)
+            if dtype == 'bool':
+                if not isinstance(value, bool):
+                    raise ValueError(f"param '{name}' expects bool value")
+                return value
+            return value
         
         if stype == 'PARAM':
             val = self.evaluate(stmt['value'])
+            val = coerce_param_value(stmt.get('dtype'), val, stmt.get('name'))
             self.vars[stmt['name']] = val
             self.logger.info(f"Defined param {stmt['name']} = {val}")
+
+        elif stype == 'DYN_PARAM':
+            # Dynamic parameter: available to the script but not exposed to the UI schema.
+            if is_literal(stmt['value']):
+                raise ValueError(f"dynp '{stmt['name']}' must not be assigned a literal value")
+            val = self.evaluate(stmt['value'])
+            self.vars[stmt['name']] = val
+            self.logger.info(f"Defined dynp {stmt['name']} = {val}")
             
         elif stype == 'SET':
             val = self.evaluate(stmt['value'])

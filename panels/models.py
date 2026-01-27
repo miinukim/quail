@@ -1,3 +1,7 @@
+"""
+Panel and PanelConfig models.
+Panels represent reusable experiment UI configurations; PanelConfig stores snapshots.
+"""
 import uuid
 from django.db import models
 from django.contrib.auth.models import User
@@ -18,6 +22,7 @@ def generate_config_id():
     return f"pcfg_{uuid.uuid4().hex[:6]}"
 
 class Panel(models.Model):
+    # Human-friendly id used by the frontend.
     panel_id = models.CharField(max_length=32, unique=True, default=generate_panel_id)
     name = models.CharField(max_length=255)
     class_name = models.CharField(max_length=255, blank=True)
@@ -26,12 +31,12 @@ class Panel(models.Model):
     tags = models.JSONField(default=list, blank=True)
     config_id = models.CharField(max_length=32, null=True, blank=True)
 
-    # Schema & values
+    # Schema & values for UI rendering and defaults.
     parameters_schema = models.JSONField(default=dict, blank=True)
     param_values = models.JSONField(default=dict, blank=True)
     panel_fields = models.JSONField(default=dict, blank=True)
 
-    # default scheduling
+    # Default scheduling used when creating runs.
     schedule_defaults = models.JSONField(default=default_schedule_defaults)
 
     author = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
@@ -43,6 +48,7 @@ class Panel(models.Model):
 
 
 class PanelConfig(models.Model):
+    # Snapshot container for a panel's configuration at a point in time.
     config_id = models.CharField(max_length=32, unique=True, default=generate_config_id)
     title = models.CharField(max_length=255)
     note = models.TextField(blank=True)
