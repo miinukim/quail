@@ -3,6 +3,7 @@ Defines the Celery tasks for the expmanager app.
 Includes the `run_experiment_task` which is the entry point for background experiment execution.
 """
 from celery import shared_task
+import logging
 from expmanager.models import ExperimentRun, RunLog
 from orchestrator.engine import ExperimentEngine
 import traceback
@@ -12,9 +13,12 @@ from django.utils import timezone
 
 @shared_task(bind=True)
 def run_experiment_task(self, run_id):
+    logger = logging.getLogger("quail.inspect")
+    logger.info("run_experiment_task start rid=%s task_id=%s", run_id, getattr(self.request, "id", None))
     try:
         experiment_run = ExperimentRun.objects.get(id=run_id)
     except ExperimentRun.DoesNotExist:
+        logger.info("run_experiment_task missing run rid=%s", run_id)
         return f"ExperimentRun {run_id} not found"
 
     experiment_run.status = 'RUNNING'
@@ -35,6 +39,7 @@ def run_experiment_task(self, run_id):
         experiment_run.status = 'COMPLETED'
         experiment_run.completed_at = timezone.now()
         experiment_run.save()
+        logger.info("run_experiment_task simulated complete rid=%s", run_id)
         return experiment_run.status
 
     engine = ExperimentEngine(experiment_run)
@@ -52,5 +57,6 @@ def run_experiment_task(self, run_id):
     finally:
         experiment_run.completed_at = timezone.now()
         experiment_run.save()
+        logger.info("run_experiment_task finished rid=%s status=%s", run_id, experiment_run.status)
         
     return experiment_run.status
