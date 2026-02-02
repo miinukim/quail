@@ -182,15 +182,16 @@ QuAIL is a Django-based experiment management system for experiments with device
 
 ### Phase 4: Script Execution (Example)
 
-```python
+```text
 # Example script:
-init_data(param=("voltage", "current"))
-for v in (from 0 to 5 step 0.1):
-    set dac.voltage v
-    sleep(0.1)
-    i = get multimeter.current
-    d = run("seq1", fpga_code)
-    save(params=(v, i), data=d)
+init_data(param=("voltage", "current"));
+for v in (from 0 to 5 step 0.1) : {
+    set dac.voltage v;
+    sleep(0.1);
+    i = get multimeter.current;
+    d = run("seq1", fpga_code);
+    save(params=(v, i), data=d);
+}
 ```
 
 **Execution flow:**

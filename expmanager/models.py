@@ -1,3 +1,7 @@
+"""
+ExperimentScript/Run/Dataset/RunLog models.
+These represent the core execution and data artifacts.
+"""
 from django.db import models
 from django.contrib.auth.models import User
 
@@ -23,13 +27,14 @@ class ExperimentRun(models.Model):
         ('COMPLETED', 'Completed'),
         ('FAILED', 'Failed'),
         ('CANCELLED', 'Cancelled'),
+        ('ABORTED', 'Aborted'),
     ]
 
     PRIORITY_CHOICES = [
-        ('LOW', 'Low'),
-        ('NORMAL', 'Normal'),
-        ('HIGH', 'High'),
-        ('CRITICAL', 'Critical'),
+        (1, 'Low'),
+        (2, 'Normal'),
+        (3, 'High'),
+        (4, 'Critical'),
     ]
 
     SCHEDULE_CHOICES = [
@@ -41,6 +46,7 @@ class ExperimentRun(models.Model):
     # Link to the Script registry, OR just a raw path if ad-hoc
     script = models.ForeignKey(ExperimentScript, on_delete=models.SET_NULL, null=True, blank=True)
     script_path = models.CharField(max_length=512, help_text="Path used for this specific run", blank=True)
+    name = models.CharField(max_length=255, blank=True, default="")
     
     # Execution arguments
     arguments = models.JSONField(default=dict, blank=True, help_text="Runtime arguments for the function")
@@ -49,7 +55,7 @@ class ExperimentRun(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='QUEUED')
     
     # Scheduling & Priority
-    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='NORMAL')
+    priority = models.IntegerField(choices=PRIORITY_CHOICES, default=2)
     schedule_type = models.CharField(max_length=10, choices=SCHEDULE_CHOICES, default='NOW')
     scheduled_at = models.DateTimeField(null=True, blank=True)
     interval_min = models.IntegerField(null=True, blank=True, help_text="Recurring interval in minutes")
@@ -62,6 +68,11 @@ class ExperimentRun(models.Model):
         # Auto-fill script path if linked to a Script object
         if self.script and not self.script_path:
             self.script_path = self.script.script_path
+        if not self.name:
+            if self.script:
+                self.name = self.script.name
+            elif self.script_path:
+                self.name = self.script_path.split("/")[-1]
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -92,3 +103,20 @@ class RunLog(models.Model):
 
     def __str__(self):
         return f"[{self.timestamp}] {self.level}: {self.message}"
+
+
+class Archive(models.Model):
+    """
+    Snapshot of a run with selected datasets and metadata.
+    """
+    title = models.CharField(max_length=255)
+    experiment_run = models.ForeignKey(ExperimentRun, related_name='archives', on_delete=models.CASCADE)
+    datasets = models.JSONField(default=list, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    note = models.TextField(blank=True)
+    snapshot_mode = models.CharField(max_length=32, blank=True, default="")
+    author = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Archive {self.id} (Run {self.experiment_run_id})"

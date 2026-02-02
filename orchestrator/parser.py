@@ -33,6 +33,15 @@ class Lexer:
         else:
             self.current_char = None
 
+    def peek(self):
+        """
+        Look ahead one character without consuming it.
+        """
+        nxt = self.pos + 1
+        if nxt < len(self.code):
+            return self.code[nxt]
+        return None
+
     def skip_whitespace(self):
         """
         Skip whitespace characters.
@@ -42,11 +51,11 @@ class Lexer:
                 self.line += 1
             self.advance()
 
-    def number(self):
+    def number(self, negative=False):
         """
         Return a (multidigit) integer or float consumed from the input.
         """
-        result = ''
+        result = '-' if negative else ''
         while self.current_char is not None and (self.current_char.isdigit() or self.current_char == '.'):
             result += self.current_char
             self.advance()
@@ -76,9 +85,12 @@ class Lexer:
         while self.current_char is not None and (self.current_char.isalnum() or self.current_char == '_' or self.current_char == '.'):
             result += self.current_char
             self.advance()
-        
+
+        if result in ('true', 'false', 'True', 'False'):
+            return Token('BOOLEAN', result.lower() == 'true', self.line)
+
         keywords = {
-            'param': 'PARAM', 'set': 'SET', 'run': 'RUN',
+            'param': 'PARAM', 'dynp': 'DYN_PARAM', 'set': 'SET', 'run': 'RUN',
             'save': 'SAVE', 'sleep': 'SLEEP', 'for': 'FOR', 'in': 'IN',
             'from': 'FROM', 'to': 'TO', 'step': 'STEP', 'get': 'GET',
             'init_data': 'INIT_DATA', 'if': 'IF', 'else': 'ELSE'
@@ -99,6 +111,10 @@ class Lexer:
             
             if self.current_char.isdigit():
                 return self.number()
+
+            if self.current_char == '-' and (self.peek() and (self.peek().isdigit() or self.peek() == '.')):
+                self.advance()
+                return self.number(negative=True)
             
             if self.current_char == '"':
                 return self.string()
@@ -153,6 +169,14 @@ class Lexer:
             if self.current_char == ',':
                 self.advance()
                 return Token('COMMA', ',', self.line)
+
+            if self.current_char == ';':
+                self.advance()
+                return Token('SEMI', ';', self.line)
+
+            if self.current_char == ':':
+                self.advance()
+                return Token('COLON', ':', self.line)
             
             if self.current_char == '#':
                 # Comment
@@ -201,22 +225,40 @@ class Parser:
 
     def statement(self):
         """
-        statement : param_decl | set_cmd | run_cmd | assignment | save_cmd | init_data_cmd | sleep_cmd | for_loop | if_stmt
+        statement : param_decl | dyn_param_decl | set_cmd | run_cmd | assignment | save_cmd | init_data_cmd | sleep_cmd | for_loop | if_stmt
         """
         if self.current_token.type == 'PARAM':
-            return self.param_decl()
+            node = self.param_decl()
+            self.process_token('SEMI')
+            return node
+        elif self.current_token.type == 'DYN_PARAM':
+            node = self.dyn_param_decl()
+            self.process_token('SEMI')
+            return node
         elif self.current_token.type == 'SET':
-            return self.set_cmd()
+            node = self.set_cmd()
+            self.process_token('SEMI')
+            return node
         elif self.current_token.type == 'RUN':
-            return self.run_cmd()
+            node = self.run_cmd()
+            self.process_token('SEMI')
+            return node
         elif self.current_token.type == 'IDENTIFIER':
-            return self.assignment()
+            node = self.assignment()
+            self.process_token('SEMI')
+            return node
         elif self.current_token.type == 'SAVE':
-            return self.save_cmd()
+            node = self.save_cmd()
+            self.process_token('SEMI')
+            return node
         elif self.current_token.type == 'INIT_DATA':
-            return self.init_data_cmd()
+            node = self.init_data_cmd()
+            self.process_token('SEMI')
+            return node
         elif self.current_token.type == 'SLEEP':
-            return self.sleep_cmd()
+            node = self.sleep_cmd()
+            self.process_token('SEMI')
+            return node
         elif self.current_token.type == 'FOR':
             return self.for_loop()
         elif self.current_token.type == 'IF':
@@ -226,14 +268,29 @@ class Parser:
 
     def param_decl(self):
         """
-        param_decl : PARAM IDENTIFIER ASSIGN expression
+        param_decl : PARAM (TYPE)? IDENTIFIER ASSIGN expression
         """
         self.process_token('PARAM')
+        dtype = None
+        if self.current_token.type == 'IDENTIFIER' and self.current_token.value in ('int', 'float', 'bool'):
+            dtype = self.current_token.value
+            self.process_token('IDENTIFIER')
         name = self.current_token.value
         self.process_token('IDENTIFIER')
         self.process_token('ASSIGN')
         val = self.expression()
-        return {'type': 'PARAM', 'name': name, 'value': val}
+        return {'type': 'PARAM', 'name': name, 'value': val, 'dtype': dtype}
+
+    def dyn_param_decl(self):
+        """
+        dyn_param_decl : DYN_PARAM IDENTIFIER ASSIGN expression
+        """
+        self.process_token('DYN_PARAM')
+        name = self.current_token.value
+        self.process_token('IDENTIFIER')
+        self.process_token('ASSIGN')
+        val = self.expression()
+        return {'type': 'DYN_PARAM', 'name': name, 'value': val}
 
     def set_cmd(self):
         """
@@ -335,7 +392,7 @@ class Parser:
 
     def for_loop(self):
         """
-        for_loop : FOR IDENTIFIER IN LPAREN FROM expression TO expression (STEP expression)? RPAREN LBRACE statement* RBRACE
+        for_loop : FOR IDENTIFIER IN LPAREN FROM expression TO expression (STEP expression)? RPAREN COLON LBRACE statement* RBRACE
         """
         self.process_token('FOR')
         var_name = self.current_token.value
@@ -351,6 +408,7 @@ class Parser:
             self.process_token('STEP')
             step = self.expression()
         self.process_token('RPAREN')
+        self.process_token('COLON')
         
         self.process_token('LBRACE')
         body = []
@@ -369,12 +427,13 @@ class Parser:
 
     def if_stmt(self):
         """
-        if_stmt : IF LPAREN expression RPAREN LBRACE statement* RBRACE (ELSE LBRACE statement* RBRACE)?
+        if_stmt : IF LPAREN expression RPAREN COLON LBRACE statement* RBRACE (ELSE COLON LBRACE statement* RBRACE)?
         """
         self.process_token('IF')
         self.process_token('LPAREN')
         condition = self.expression()
         self.process_token('RPAREN')
+        self.process_token('COLON')
         self.process_token('LBRACE')
         
         true_body = []
@@ -385,6 +444,7 @@ class Parser:
         false_body = None
         if self.current_token.type == 'ELSE':
             self.process_token('ELSE')
+            self.process_token('COLON')
             self.process_token('LBRACE')
             false_body = []
             while self.current_token.type != 'RBRACE':
@@ -413,11 +473,15 @@ class Parser:
 
     def term(self):
         """
-        term : NUMBER | STRING | IDENTIFIER | GET IDENTIFIER | LPAREN expression (COMMA expression)* RPAREN
+        term : NUMBER | STRING | BOOLEAN | IDENTIFIER | GET IDENTIFIER | LPAREN expression (COMMA expression)* RPAREN
         """
         if self.current_token.type == 'NUMBER':
             token = self.current_token
             self.process_token('NUMBER')
+            return token.value
+        elif self.current_token.type == 'BOOLEAN':
+            token = self.current_token
+            self.process_token('BOOLEAN')
             return token.value
         elif self.current_token.type == 'STRING':
             token = self.current_token
@@ -446,5 +510,3 @@ class Parser:
             return {'type': 'TUPLE', 'items': items}
         else:
             self.error(f"Unexpected token in expression: {self.current_token.type}")
-
-

@@ -1,3 +1,6 @@
+"""
+Auth endpoints for token-based login/logout used by the frontend.
+"""
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.authtoken.models import Token
 from rest_framework.response import Response
@@ -7,6 +10,7 @@ from rest_framework import status
 
 class CustomAuthToken(ObtainAuthToken):
     def post(self, request, *args, **kwargs):
+        # Return token + basic user metadata for the UI.
         serializer = self.serializer_class(data=request.data,
                                            context={'request': request})
         serializer.is_valid(raise_exception=True)
@@ -16,11 +20,12 @@ class CustomAuthToken(ObtainAuthToken):
             'token': token.key,
             'user_id': user.pk,
             'username': user.username,
-            'email': user.email
         })
+        
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def logout_view(request):
+    # Drop the token to force re-authentication.
     request.user.auth_token.delete()
-    return Response(status=status.HTTP_200_OK)
+    return Response(status=status.HTTP_204_NO_CONTENT)
