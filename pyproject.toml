@@ -42,6 +42,7 @@ dependencies = [
     "redis>=5.0",
     "django-celery-results>=2.5",
     "django-celery-beat>=2.5",
+    "zmq",
 
     # --- Scientific / utilities ---
     "numpy",
