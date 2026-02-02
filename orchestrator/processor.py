@@ -63,7 +63,9 @@ class VirtualProcessor:
         if isinstance(node, dict):
             if node['type'] == 'VAR':
                 # Return value if it exists (local var), else return the name itself (potential param name)
-                return self.vars.get(node['name'], node['name'])
+                if node['name'] in self.vars:
+                    return self.vars[node['name']]
+                return self.context.get(node['name'], node['name'])
             elif node['type'] == 'GET':
                 target_name = node['target']
                 # If target is a local var, get its value (which might be a param name)
@@ -181,15 +183,20 @@ class VirtualProcessor:
 
         elif stype == 'RUN':
             args = [self.evaluate(a) for a in stmt['args']]
-                
+
             self.logger.info(f"Running Sequencer with args: {args}")
-            
-            # In reality: data = self.context['instruments'].run_fpga(*args)
-            # Mock return data: 4xN array
-            import random
-            N = 100
-            # 4 rows of data
-            data = [[random.random() for _ in range(N)] for _ in range(4)]
+
+            if not args:
+                raise ValueError("run() requires at least a sequencer/device name")
+
+            # Convenience: allow run(<device>) to use script-level fpga_code from context.
+            if len(args) == 1 and 'fpga_code' in self.context:
+                args.append(self.context['fpga_code'])
+
+            if len(args) < 2:
+                raise ValueError("run() requires run(<device_name>, <fpga_code_or_path>)")
+
+            data = self.context['instruments'].run_fpga(args[0], args[1])
             
             target = stmt.get('target')
             if target:
