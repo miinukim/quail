@@ -47,8 +47,8 @@ class ExperimentEngine:
         self.close_data_file()
 
         # Ensure data directory exists
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        data_dir = os.path.join(base_dir, 'data')
+        from django.conf import settings
+        data_dir = settings.DATA_DIR
         os.makedirs(data_dir, exist_ok=True)
         
         # Create Dataset Entry
@@ -209,8 +209,8 @@ class ExperimentEngine:
         
         # Determine log directory
         # quail/orchestrator/engine.py -> quail/logs
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        log_dir = os.path.join(base_dir, 'logs')
+        from django.conf import settings
+        log_dir = settings.LOGS_DIR
         
         # Context for the parser
         context = {

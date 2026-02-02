@@ -33,7 +33,7 @@ class ExperimentScriptViewSet(viewsets.ModelViewSet):
             from django.conf import settings
             filename = f"{data.get('name', 'script')}.qil"
             # Sanitize filename?
-            file_dir = os.path.join(settings.BASE_DIR, 'user_scripts')
+            file_dir = settings.USER_SCRIPTS_DIR
             os.makedirs(file_dir, exist_ok=True)
             path = os.path.join(file_dir, filename)
             with open(path, 'w') as f:
@@ -466,11 +466,10 @@ class FileViewSet(viewsets.ViewSet):
     """
     
     def _get_directory(self, file_type):
-        base_dir = settings.BASE_DIR
         if file_type == 'script':
-            return os.path.join(base_dir, 'user_scripts')
+            return settings.USER_SCRIPTS_DIR
         elif file_type == 'fpga':
-            return os.path.join(base_dir, 'user_fpga')
+            return settings.USER_FPGA_DIR
         return None
     def list(self, request):
         """

@@ -51,14 +51,11 @@ def resolve_script_path(path):
     import os
     if os.path.isabs(path) and os.path.exists(path):
         return path
-    # Try relative to BASE_DIR and user_scripts
-    base = settings.BASE_DIR
-    candidate = os.path.join(base, path)
-    if os.path.exists(candidate):
-        return candidate
-    candidate = os.path.join(base, "user_scripts", path)
-    if os.path.exists(candidate):
-        return candidate
+    # Try relative to configured script dirs
+    for base in (settings.USER_SCRIPTS_DIR, settings.BASE_DIR):
+        candidate = os.path.join(base, path)
+        if os.path.exists(candidate):
+            return candidate
     return path
 
 def build_panel_fields(parameters_schema):

@@ -25,11 +25,25 @@ classifiers = [
 ]
 
 dependencies = [
+    # --- Django core ---
     "Django>=4.2",
+    "djangorestframework>=3.14",
+    "django-filter>=23.0",
+    "django-cors-headers>=4.0",
+    "python-dotenv>=1.0",
+
+    # --- Async / Channels ---
+    "channels>=4.0",
+    "channels-redis>=4.1",
+    "daphne>=4.0",
+
+    # --- Celery / Redis ---
     "celery>=5.3",
     "redis>=5.0",
-    "channels[daphne]>=4.0",
-    "channels-redis>=4.1",
+    "django-celery-results>=2.5",
+    "django-celery-beat>=2.5",
+
+    # --- Scientific / utilities ---
     "numpy",
     "h5py",
     "requests",

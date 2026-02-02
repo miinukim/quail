@@ -12,9 +12,38 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 import os
+import json
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Optional config.json to override filesystem locations (user scripts, FPGA code, logs, data, DB)
+CONFIG_PATH = Path(os.environ.get("QUAIL_CONFIG", BASE_DIR / "config.json"))
+CONFIG = {}
+
+if CONFIG_PATH.exists():
+    try:
+        CONFIG = json.loads(CONFIG_PATH.read_text())
+    except Exception:
+        CONFIG = {}
+
+def _resolve_path(value, default):
+    if not value:
+        return Path(default)
+    p = Path(os.path.expanduser(value))
+    if not p.is_absolute():
+        p = BASE_DIR / p
+    return p
+
+# Directories (can be overridden in config.json -> {"paths": {"user_scripts": "...", ...}})
+PATH_CFG = CONFIG.get("paths", {}) if isinstance(CONFIG.get("paths", {}), dict) else {}
+USER_SCRIPTS_DIR = _resolve_path(PATH_CFG.get("user_scripts"), BASE_DIR / "user_scripts")
+USER_FPGA_DIR = _resolve_path(PATH_CFG.get("user_fpga"), BASE_DIR / "user_fpga")
+LOGS_DIR = _resolve_path(PATH_CFG.get("logs"), BASE_DIR / "logs")
+DATA_DIR = _resolve_path(PATH_CFG.get("data"), BASE_DIR / "data")
+
+for _d in (USER_SCRIPTS_DIR, USER_FPGA_DIR, LOGS_DIR, DATA_DIR):
+    os.makedirs(_d, exist_ok=True)
 
 
 # Quick-start development settings - unsuitable for production
@@ -86,17 +115,20 @@ WSGI_APPLICATION = 'quail.wsgi.application'
 ASGI_APPLICATION = 'quail.asgi.application'
 
 # Channels
+# Channels
+REDIS_HOST = CONFIG.get("redis_host", "127.0.0.1")
+REDIS_PORT = int(CONFIG.get("redis_port", 6379))
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)],
+            "hosts": [(REDIS_HOST, REDIS_PORT)],
         },
     },
 }
 
 # Celery
-CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
+CELERY_BROKER_URL = CONFIG.get("celery_broker_url", f"redis://{REDIS_HOST}:{REDIS_PORT}/0")
 CELERY_RESULT_BACKEND = 'django-db'
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
@@ -107,7 +139,7 @@ CELERY_TIMEZONE = 'UTC'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DB_PATH = os.environ.get("QUAIL_DB_PATH", str(BASE_DIR / "db.sqlite3"))
+DB_PATH = os.environ.get("QUAIL_DB_PATH", CONFIG.get("database_path", str(BASE_DIR / "db.sqlite3")))
 
 DATABASES = {
     'default': {
@@ -185,19 +217,19 @@ LOGGING = {
         },
         'file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs', 'django.log'),
+            'filename': os.path.join(LOGS_DIR, 'django.log'),
             'formatter': 'verbose',
             'level': 'INFO',
         },
         'important_file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs', 'important.log'),
+            'filename': os.path.join(LOGS_DIR, 'important.log'),
             'formatter': 'verbose',
             'level': 'INFO',
         },
         'error_file': {
             'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs', 'error.log'),
+            'filename': os.path.join(LOGS_DIR, 'error.log'),
             'formatter': 'verbose',
             'level': 'ERROR',
         },
@@ -245,6 +277,8 @@ LOGGING = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173"
 ]
 
 CORS_ALLOW_CREDENTIALS = True

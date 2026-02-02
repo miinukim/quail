@@ -1,0 +1,12 @@
+{
+  "paths": {
+    "user_scripts": "user_scripts",
+    "user_fpga": "user_fpga",
+    "logs": "logs",
+    "data": "data"
+  },
+  "database_path": "db.sqlite3",
+  "redis_host": "127.0.0.1",
+  "redis_port": 6379,
+  "celery_broker_url": "redis://127.0.0.1:6379/0"
+}
