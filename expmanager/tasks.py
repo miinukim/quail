@@ -15,6 +15,11 @@ from django.utils import timezone
 def run_experiment_task(self, run_id):
     logger = logging.getLogger("quail.inspect")
     logger.info("run_experiment_task start rid=%s task_id=%s", run_id, getattr(self.request, "id", None))
+    logger.info(
+        "run_experiment_task env simulate flag: QUAIL_SIMULATE_RUNS=%s file=%s",
+        os.environ.get("QUAIL_SIMULATE_RUNS"),
+        __file__,
+    )
     try:
         experiment_run = ExperimentRun.objects.get(id=run_id)
     except ExperimentRun.DoesNotExist:
@@ -27,8 +32,6 @@ def run_experiment_task(self, run_id):
 
     simulate_env = os.environ.get("QUAIL_SIMULATE_RUNS")
     simulate = simulate_env is not None and simulate_env.lower() in ("1", "true", "yes")
-    if simulate_env is None and getattr(settings, "DEBUG", False):
-        simulate = True
 
     if simulate:
         RunLog.objects.create(

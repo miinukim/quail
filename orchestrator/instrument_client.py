@@ -17,6 +17,7 @@ class InstrumentClient:
         self.port = port
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.REQ)
+        logger.info("InstrumentClient connecting to tcp://%s:%s", self.host, self.port)
         self.socket.connect(f"tcp://{self.host}:{self.port}")
         self.socket.setsockopt(zmq.RCVTIMEO, 5000)
         self.socket.setsockopt(zmq.SNDTIMEO, 5000)
@@ -26,9 +27,11 @@ class InstrumentClient:
         Send a raw dictionary as a JSON string and wait for response.
         """
         try:
+            logger.info("InstrumentClient send: %s", instruction_dict.get("operation"))
             self.socket.send_string(json.dumps(instruction_dict))
             response_str = self.socket.recv_string()
             response = json.loads(response_str)
+            logger.info("InstrumentClient recv: class=%s error=%s", response.get("_class_type"), response.get("error"))
             
             if response.get("_class_type") == "ServerResponse":
                 if response.get("error") and response["error"] != "None":
