@@ -180,79 +180,29 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
         self.dataset_id = self.scope["url_route"]["kwargs"]["dataset_id"]
-        self.period_ms = 200
-        self._running = True
-        self._index = 0
-        self._op = "append"
-        # This consumer currently streams synthetic points.
+        # Synthetic dataset streaming has been disabled.
         await self.accept()
-        self._task = asyncio.create_task(self._loop())
+        await self.send(
+            text_data=json.dumps(
+                {
+                    "type": "error",
+                    "rid": self.run_id,
+                    "dataset_id": self.dataset_id,
+                    "message": "Dataset streaming disabled (no synthetic data).",
+                    "updated_at": _now_iso(),
+                }
+            )
+        )
+        await self.close()
 
     async def disconnect(self, close_code):
-        self._running = False
-        task = getattr(self, "_task", None)
-        if task:
-            task.cancel()
+        return
 
     async def receive(self, text_data=None, bytes_data=None):
-        try:
-            data = json.loads(text_data or "{}")
-        except Exception:
-            return
-        if "period_ms" in data:
-            try:
-                self.period_ms = max(50, int(data["period_ms"]))
-            except Exception:
-                pass
-        if data.get("op") in ("append", "replace", "reset"):
-            self._op = data["op"]
-        if data.get("mode") == "reset":
-            self._index = 0
+        return
 
     async def _loop(self):
-        while self._running:
-            await asyncio.sleep(self.period_ms / 1000.0)
-            now = _now_iso()
-            if self._op == "reset":
-                msg = {
-                    "type": "patch",
-                    "op": "reset",
-                    "rid": self.run_id,
-                    "dataset_id": self.dataset_id,
-                    "updated_at": now,
-                }
-                self._index = 0
-                await self.send(text_data=json.dumps(msg))
-                continue
-
-            points = []
-            for _ in range(3):
-                points.append({
-                    "index": self._index,
-                    "x": self._index,
-                    "y": random.random(),
-                })
-                self._index += 1
-
-            if self._op == "replace":
-                msg = {
-                    "type": "patch",
-                    "op": "replace",
-                    "rid": self.run_id,
-                    "dataset_id": self.dataset_id,
-                    "data": points,
-                    "updated_at": now,
-                }
-            else:
-                msg = {
-                    "type": "patch",
-                    "op": "append",
-                    "rid": self.run_id,
-                    "dataset_id": self.dataset_id,
-                    "points": points,
-                    "updated_at": now,
-                }
-            await self.send(text_data=json.dumps(msg))
+        return
 
 
 class TTLStatusConsumer(AsyncWebsocketConsumer):

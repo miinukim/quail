@@ -169,15 +169,6 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         """
         experiment_run = self.get_object()
         datasets = experiment_run.datasets.all()
-        if not datasets:
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
-            return Response([{
-                'dataset_id': 'live',
-                'name': 'live',
-                'dtype': 'float',
-                'shape': [0, 2],
-                'updated_at': now,
-            }])
         serializer = DatasetSerializer(datasets, many=True)
         return Response(serializer.data)
 
@@ -196,16 +187,6 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         try:
             dataset = experiment_run.datasets.get(name=dataset_name)
         except Dataset.DoesNotExist:
-            if dataset_name == 'live':
-                now = datetime.datetime.now(datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
-                return Response({
-                    'rid': experiment_run.id,
-                    'dataset_id': 'live',
-                    'name': 'live',
-                    'dtype': 'float',
-                    'shape': [0, 2],
-                    'updated_at': now,
-                })
             return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
 
         meta = dataset.metadata or {}
@@ -241,9 +222,6 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         try:
             dataset = experiment_run.datasets.get(name=dataset_name)
         except Dataset.DoesNotExist:
-            if dataset_name == 'live' and fmt == 'json':
-                points = [[i, random.random()] for i in range(20)]
-                return Response({'rid': experiment_run.id, 'dataset_id': 'live', 'name': 'live', 'data': points})
             return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
 
         if not dataset.file_path or not os.path.exists(dataset.file_path):
@@ -444,9 +422,6 @@ class ArchiveViewSet(viewsets.ModelViewSet):
         try:
             dataset = run.datasets.get(name=dataset_name)
         except Dataset.DoesNotExist:
-            if dataset_name == 'live':
-                points = [[i, random.random()] for i in range(20)]
-                return Response({'archive_id': a.id, 'dataset_id': 'live', 'name': 'live', 'data': points})
             return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
         if not dataset.file_path or not os.path.exists(dataset.file_path):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
