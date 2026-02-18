@@ -7,11 +7,83 @@ import asyncio
 import random
 import datetime
 from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
 from core.ttl_state import TTL_DEVICES, TTL_STATE
+from expmanager.models import ExperimentRun
+from expmanager.serializers import ExperimentRunListSerializer
 
 
 def _now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+@database_sync_to_async
+def _fetch_runs(filters):
+    qs = ExperimentRun.objects.all()
+    status_q = filters.get("status")
+    author_id = filters.get("author_id")
+    limit = filters.get("limit")
+    if status_q:
+        statuses = [s.strip().upper() for s in str(status_q).split(",") if s.strip()]
+        if statuses:
+            qs = qs.filter(status__in=statuses)
+    if author_id:
+        try:
+            qs = qs.filter(user_id=int(author_id))
+        except Exception:
+            pass
+    qs = qs.order_by("-created_at")
+    if limit:
+        try:
+            qs = qs[: int(limit)]
+        except Exception:
+            pass
+    serializer = ExperimentRunListSerializer(qs, many=True)
+    return {"items": serializer.data, "next_cursor": None}
+
+
+class RunsListConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        self.period_ms = 2000
+        self._running = True
+        self._filters = {}
+        await self.accept()
+        self._task = asyncio.create_task(self._loop())
+
+    async def disconnect(self, close_code):
+        self._running = False
+        task = getattr(self, "_task", None)
+        if task:
+            task.cancel()
+
+    async def receive(self, text_data=None, bytes_data=None):
+        try:
+            data = json.loads(text_data or "{}")
+        except Exception:
+            return
+        if "period_ms" in data:
+            try:
+                self.period_ms = max(250, int(data["period_ms"]))
+            except Exception:
+                pass
+        if "filters" in data and isinstance(data["filters"], dict):
+            self._filters = data["filters"]
+        if data.get("op") == "refresh":
+            await self._send_snapshot()
+
+    async def _send_snapshot(self):
+        payload = await _fetch_runs(self._filters)
+        msg = {
+            "type": "runs",
+            "items": payload.get("items", []),
+            "next_cursor": payload.get("next_cursor"),
+            "updated_at": _now_iso(),
+        }
+        await self.send(text_data=json.dumps(msg))
+
+    async def _loop(self):
+        while self._running:
+            await asyncio.sleep(self.period_ms / 1000.0)
+            await self._send_snapshot()
 
 
 class RunStatusConsumer(AsyncWebsocketConsumer):
