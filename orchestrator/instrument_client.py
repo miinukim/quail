@@ -6,7 +6,7 @@ import zmq
 import json
 import logging
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("quail.engine.instrument")
 
 class InstrumentClient:
     """
@@ -21,6 +21,26 @@ class InstrumentClient:
         self.socket.connect(f"tcp://{self.host}:{self.port}")
         self.socket.setsockopt(zmq.RCVTIMEO, 5000)
         self.socket.setsockopt(zmq.SNDTIMEO, 5000)
+
+    def close(self):
+        """Release ZMQ resources for this client."""
+        try:
+            if getattr(self, "socket", None) is not None:
+                self.socket.close(linger=0)
+        finally:
+            if getattr(self, "context", None) is not None:
+                self.context.term()
+
+    def health_check(self):
+        """
+        Active connectivity check.
+        Sends a lightweight request and expects a valid server response.
+        """
+        instruction = {
+            "operation": "get_existing_instruments",
+            "_class_type": "ServerInstruction",
+        }
+        return self._send(instruction)
 
     def _send(self, instruction_dict):
         """

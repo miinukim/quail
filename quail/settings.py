@@ -227,6 +227,12 @@ LOGGING = {
             'formatter': 'verbose',
             'level': 'INFO',
         },
+        'engine_file': {
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(LOGS_DIR, 'engine.log'),
+            'formatter': 'verbose',
+            'level': 'INFO',
+        },
         'error_file': {
             'class': 'logging.FileHandler',
             'filename': os.path.join(LOGS_DIR, 'error.log'),
@@ -267,6 +273,11 @@ LOGGING = {
         },
         'quail.inspect': {
             'handlers': ['important_console', 'important_file'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'quail.engine': {
+            'handlers': ['engine_file', 'error_file'],
             'level': 'INFO',
             'propagate': False,
         },

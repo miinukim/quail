@@ -3,39 +3,23 @@ This file defines the VirtualProcessor class, which executes the AST generated b
 It manages the runtime state (variables), interacts with instruments via the context, and handles control flow.
 """
 import logging
-import os
-import datetime
 from .parser import Lexer, Parser
 
 class VirtualProcessor:
-    def __init__(self, context, log_dir):
+    def __init__(self, context):
         """
-        Initialize the VirtualProcessor with a context and log directory.
+        Initialize the VirtualProcessor with a context.
         Context should contain:
         - 'instruments': InstrumentClient instance
         - 'sleep': sleep function
         - 'save_data': data saving function
-        
-        Logs will be written to a file in log_dir.
         """
         self.context = context
         self.vars = {}   # name -> value (includes params)
         self.data_schema = None # { 'param_axes': [], 'num_data': N }
         
-        # Setup logging
-        self.logger = logging.getLogger(f'VirtualProcessor_{id(self)}')
-        self.logger.setLevel(logging.INFO)
-        self.logger.handlers = [] # Clear existing handlers
-        
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # Simplified log_dir handling as per instruction
-        log_file = os.path.join(log_dir, f"experiment_{timestamp}.log")
-        
-        handler = logging.FileHandler(log_file)
-        formatter = logging.Formatter('%(asctime)s - %(message)s')
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
+        # Dedicated engine logger; output is routed by Django LOGGING to logs/engine.log
+        self.logger = logging.getLogger("quail.engine.processor")
 
     def parse(self, code):
         """
@@ -43,14 +27,18 @@ class VirtualProcessor:
         """
         lexer = Lexer(code)
         parser = Parser(lexer)
-        return parser.program()
+        ast = parser.program()
+        self.logger.info("Parsed script into AST with %d top-level statements", len(ast))
+        return ast
 
     def execute(self, code):
         """
         Parse and execute the given code.
         """
+        self.logger.info("VirtualProcessor starting execution")
         ast = self.parse(code)
         self.start_proc(ast)
+        self.logger.info("VirtualProcessor finished execution")
 
     def evaluate(self, node):
         """
@@ -117,6 +105,7 @@ class VirtualProcessor:
             self.context['check_abort']()
 
         stype = stmt['type']
+        self.logger.info("Executing statement type=%s", stype)
 
         def is_literal(node):
             if isinstance(node, (int, float, str)):
@@ -152,8 +141,6 @@ class VirtualProcessor:
 
         elif stype == 'DYN_PARAM':
             # Dynamic parameter: available to the script but not exposed to the UI schema.
-            if is_literal(stmt['value']):
-                raise ValueError(f"dynp '{stmt['name']}' must not be assigned a literal value")
             val = self.evaluate(stmt['value'])
             self.vars[stmt['name']] = val
             self.logger.info(f"Defined dynp {stmt['name']} = {val}")
@@ -274,6 +261,7 @@ class VirtualProcessor:
 
         elif stype == 'SLEEP':
             duration = self.evaluate(stmt['duration'])
+            self.logger.info("Sleeping for %s seconds", duration)
             self.context['sleep'](duration)
             
         elif stype == 'FOR':
@@ -281,6 +269,7 @@ class VirtualProcessor:
             end = self.evaluate(stmt['end'])
             step = self.evaluate(stmt['step'])
             var = stmt['var']
+            self.logger.info("Entering FOR loop var=%s start=%s end=%s step=%s", var, start, end, step)
             
             # Create range
             # Handle float steps
@@ -291,9 +280,11 @@ class VirtualProcessor:
             for val in vals:
                 self.vars[var] = float(val)
                 self.start_proc(stmt['body'])
+            self.logger.info("Exiting FOR loop var=%s", var)
 
         elif stype == 'IF':
             condition = self.evaluate(stmt['condition'])
+            self.logger.info("Evaluated IF condition=%s", condition)
             if condition:
                 self.start_proc(stmt['true_body'])
             elif stmt['false_body']:

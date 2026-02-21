@@ -14,9 +14,16 @@ from django.utils import timezone
 @shared_task(bind=True)
 def run_experiment_task(self, run_id):
     logger = logging.getLogger("quail.inspect")
+    engine_logger = logging.getLogger("quail.engine")
     logger.info("run_experiment_task start rid=%s task_id=%s", run_id, getattr(self.request, "id", None))
+    engine_logger.info("task start rid=%s task_id=%s", run_id, getattr(self.request, "id", None))
     logger.info(
         "run_experiment_task env simulate flag: QUAIL_SIMULATE_RUNS=%s file=%s",
+        os.environ.get("QUAIL_SIMULATE_RUNS"),
+        __file__,
+    )
+    engine_logger.info(
+        "task env QUAIL_SIMULATE_RUNS=%s file=%s",
         os.environ.get("QUAIL_SIMULATE_RUNS"),
         __file__,
     )
@@ -39,6 +46,7 @@ def run_experiment_task(self, run_id):
             level="INFO",
             message="Simulated run (no hardware execution)."
         )
+        engine_logger.info("task simulated completion rid=%s", run_id)
         experiment_run.status = 'COMPLETED'
         experiment_run.completed_at = timezone.now()
         experiment_run.save()
@@ -51,15 +59,20 @@ def run_experiment_task(self, run_id):
         engine.run()
         experiment_run.status = 'COMPLETED'
     except InterruptedError:
-        experiment_run.status = 'CANCELLED'
+        experiment_run.refresh_from_db(fields=['status'])
+        if experiment_run.status != 'ABORTED':
+            experiment_run.status = 'CANCELLED'
         engine.log("Experiment cancelled.")
+        engine_logger.warning("task interrupted rid=%s", run_id)
     except Exception as e:
         experiment_run.status = 'FAILED'
         engine.log(f"Error: {str(e)}")
         engine.log(traceback.format_exc())
+        engine_logger.exception("task failed rid=%s", run_id)
     finally:
         experiment_run.completed_at = timezone.now()
         experiment_run.save()
         logger.info("run_experiment_task finished rid=%s status=%s", run_id, experiment_run.status)
+        engine_logger.info("task finished rid=%s status=%s", run_id, experiment_run.status)
         
     return experiment_run.status

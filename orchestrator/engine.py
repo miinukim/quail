@@ -5,6 +5,8 @@ It handles logging, data saving, and invoking the VirtualProcessor to run the ex
 from django.utils import timezone
 import time
 import os
+import logging
+from pathlib import Path
 from expmanager.models import RunLog, Dataset
 from .instrument_client import InstrumentClient
 from channels.layers import get_channel_layer
@@ -16,11 +18,16 @@ import numpy as np
 class ExperimentEngine:
     def __init__(self, experiment_run):
         self.experiment_run = experiment_run
+        self.logger = logging.getLogger("quail.engine")
         self.client = InstrumentClient()
+        # Active health check: fail early if instrumentserver is unreachable.
+        self.client.health_check()
+        self.logger.info("Instrumentserver health check passed rid=%s", experiment_run.id)
         self.channel_layer = get_channel_layer()
         self.group_name = f"run_{experiment_run.id}"
         self.h5file = None  # current HDF5 file handle
         self.current_dataset = None # current Dataset model instance
+        self.logger.info("ExperimentEngine initialized rid=%s", experiment_run.id)
 
     def log(self, message, level='INFO'):
         RunLog.objects.create(
@@ -197,26 +204,24 @@ class ExperimentEngine:
         Check if the experiment has been aborted by the user.
         """
         self.experiment_run.refresh_from_db()
-        if self.experiment_run.status == 'CANCELLED':
+        if self.experiment_run.status in ('CANCELLED', 'ABORTED'):
             raise InterruptedError("Experiment cancelled by user")
 
     def run(self):
         """
         Entry point for running the experiment synchronously (from Celery).
         """
-        script = self.experiment_run.script
-        self.log(f"Starting experiment: {script.name}")
+        script_name, script_code, fpga_code = self._resolve_script_source()
+        self.logger.info("ExperimentEngine.run start rid=%s", self.experiment_run.id)
+        self.log(f"Starting experiment: {script_name}")
         
         # Determine log directory
         # quail/orchestrator/engine.py -> quail/logs
-        from django.conf import settings
-        log_dir = settings.LOGS_DIR
-        
         # Context for the parser
         context = {
             'sleep': time.sleep,
             'instruments': self.client,
-            'fpga_code': script.fpga_code,
+            'fpga_code': fpga_code,
             'save_data': self.save_data,
             'init_data': self.init_data,
             'check_abort': self.check_abort
@@ -225,16 +230,65 @@ class ExperimentEngine:
         try:
             # Execute using custom parser
             from .processor import VirtualProcessor
-            processor = VirtualProcessor(context, log_dir=log_dir)
-            processor.execute(script.script_code)
+            processor = VirtualProcessor(context)
+            processor.execute(script_code)
         except InterruptedError:
             self.log("Experiment aborted by user", level='WARNING')
+            self.logger.warning("Experiment aborted rid=%s", self.experiment_run.id)
             raise
         except Exception as e:
             self.log(f"Execution Error: {e}", level='ERROR')
+            self.logger.exception("Experiment execution failed rid=%s", self.experiment_run.id)
             raise e
         finally:
             # Always close the data file, even on error/abort
             self.close_data_file()
+            self.client.close()
+            self.logger.info("ExperimentEngine.run end rid=%s", self.experiment_run.id)
         
         self.log("Experiment finished successfully")
+
+    def _resolve_script_source(self):
+        """
+        Resolve script name/code/fpga_code for both legacy script-FK runs and
+        current script_path-only runs.
+        """
+        from django.conf import settings
+
+        script_obj = self.experiment_run.script
+        script_path = self.experiment_run.script_path
+
+        # Backward-compatible: if a richer script model exists, prefer it.
+        if script_obj is not None and hasattr(script_obj, "script_code"):
+            name = getattr(script_obj, "name", f"Run {self.experiment_run.id}")
+            code = getattr(script_obj, "script_code")
+            fpga_code = getattr(script_obj, "fpga_code", None)
+            if not code:
+                raise ValueError(f"Script object has empty script_code (rid={self.experiment_run.id})")
+            return name, code, fpga_code
+
+        if not script_path:
+            raise ValueError(f"No script_path set for run {self.experiment_run.id}")
+
+        candidate = Path(script_path)
+        paths_to_try = []
+        if candidate.is_absolute():
+            paths_to_try.append(candidate)
+        else:
+            paths_to_try.append(Path(settings.USER_SCRIPTS_DIR) / candidate)
+            paths_to_try.append(Path(settings.BASE_DIR) / candidate)
+            paths_to_try.append(Path(settings.BASE_DIR) / "user_scripts" / candidate)
+
+        resolved = next((p for p in paths_to_try if p.exists()), None)
+        if resolved is None:
+            raise FileNotFoundError(
+                f"Script file not found for run {self.experiment_run.id}: "
+                f"script_path={script_path}; tried={[str(p) for p in paths_to_try]}"
+            )
+
+        code = resolved.read_text(encoding="utf-8")
+        if not code.strip():
+            raise ValueError(f"Script file is empty: {resolved}")
+
+        self.logger.info("Resolved script for rid=%s path=%s", self.experiment_run.id, resolved)
+        return resolved.name, code, None
