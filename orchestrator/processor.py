@@ -3,6 +3,8 @@ This file defines the VirtualProcessor class, which executes the AST generated b
 It manages the runtime state (variables), interacts with instruments via the context, and handles control flow.
 """
 import logging
+import ast
+import numpy as np
 from .parser import Lexer, Parser
 
 class VirtualProcessor:
@@ -20,6 +22,117 @@ class VirtualProcessor:
         
         # Dedicated engine logger; output is routed by Django LOGGING to logs/engine.log
         self.logger = logging.getLogger("quail.engine.processor")
+
+    @staticmethod
+    def _coerce_numeric_strings(obj):
+        """Recursively convert numeric strings to numbers."""
+        if isinstance(obj, str):
+            s = obj.strip()
+            # int
+            if s and (s.isdigit() or (s[0] in "+-" and s[1:].isdigit())):
+                try:
+                    return int(s)
+                except Exception:
+                    return obj
+            # float
+            try:
+                # Avoid converting non-numeric text like 'abc'
+                if any(ch.isdigit() for ch in s):
+                    return float(s)
+            except Exception:
+                pass
+            return obj
+        if isinstance(obj, list):
+            return [VirtualProcessor._coerce_numeric_strings(v) for v in obj]
+        if isinstance(obj, tuple):
+            return [VirtualProcessor._coerce_numeric_strings(v) for v in obj]
+        return obj
+
+    @staticmethod
+    def _is_number(v):
+        return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
+
+    def _normalize_run_data(self, data):
+        """
+        Normalize FPGA output to an N x 4 numeric table when possible.
+        """
+        if data is None:
+            return []
+
+        # Some instrumentserver/proxy paths return a stringified list.
+        if isinstance(data, str):
+            text = data.strip()
+            if text:
+                try:
+                    data = ast.literal_eval(text)
+                except Exception:
+                    return data
+
+        # Convert numpy-like payloads early.
+        if isinstance(data, np.ndarray):
+            data = data.tolist()
+
+        if not isinstance(data, (list, tuple)):
+            return data
+
+        data = self._coerce_numeric_strings(data)
+        if not isinstance(data, (list, tuple)):
+            return data
+
+        # If this is 2D array-like payload from sequencer, coerce to N x 4.
+        if data and all(isinstance(row, (list, tuple)) for row in data):
+            rows = [list(row) for row in data]
+            if all(all(self._is_number(v) for v in row) for row in rows):
+                # Common sequencer format: 4 x N -> transpose to N x 4
+                if len(rows) == 4:
+                    return [list(col) for col in zip(*rows)]
+                # Already N x 4
+                if all(len(row) == 4 for row in rows):
+                    return rows
+                return rows
+
+        # 1D list-like payload
+        if all(self._is_number(v) for v in data):
+            return list(data)
+
+        return data
+
+    def _normalize_save_data(self, data):
+        """
+        Normalize save() payload to row-major list-of-lists (R x N).
+        A single numeric array becomes 1 x N.
+        """
+        if isinstance(data, np.ndarray):
+            data = data.tolist()
+        if data is None:
+            return [[]]
+        if isinstance(data, str):
+            text = data.strip()
+            if text:
+                try:
+                    data = ast.literal_eval(text)
+                except Exception:
+                    raise Exception("save() 'data' string is not a valid array literal")
+            else:
+                return [[]]
+        data = self._coerce_numeric_strings(data)
+
+        if isinstance(data, (list, tuple)):
+            if len(data) == 0:
+                return [[]]
+            # 1D numeric -> 1xN
+            if all(self._is_number(v) for v in data):
+                return [list(data)]
+            # 2D numeric -> RxN
+            if all(isinstance(row, (list, tuple)) for row in data):
+                rows = [list(row) for row in data]
+                if all(all(self._is_number(v) for v in row) for row in rows):
+                    return rows
+            raise Exception("save() 'data' must be a numeric array")
+
+        if self._is_number(data):
+            return [[data]]
+        raise Exception("save() 'data' must be a numeric array")
 
     def parse(self, code):
         """
@@ -184,6 +297,18 @@ class VirtualProcessor:
                 raise ValueError("run() requires run(<device_name>, <fpga_code_or_path>)")
 
             data = self.context['instruments'].run_fpga(args[0], args[1])
+            try:
+                preview = repr(data)
+                if len(preview) > 1000:
+                    preview = preview[:1000] + "...<truncated>"
+                self.logger.info(
+                    "Raw run() payload received: type=%s preview=%s",
+                    type(data).__name__,
+                    preview,
+                )
+            except Exception:
+                self.logger.info("Raw run() payload received (repr failed): type=%s", type(data).__name__)
+            data = self._normalize_run_data(data)
             
             target = stmt.get('target')
             if target:
@@ -200,8 +325,7 @@ class VirtualProcessor:
             if not isinstance(params, (list, tuple)):
                 raise Exception("'param' argument in init_data must be a tuple of strings")
             
-            # Hardcode num_data to 4 as per requirement
-            num_data = 4
+            num_data = kwargs.get('num_data', None)
                 
             self.data_schema = {
                 'param_axes': params,
@@ -235,12 +359,13 @@ class VirtualProcessor:
             if len(params) != len(self.data_schema['param_axes']):
                 raise Exception(f"Expected {len(self.data_schema['param_axes'])} params, got {len(params)}")
                 
-            # Validate data: expect num_data x N array (list of lists)
-            if not isinstance(data, (list, tuple)):
-                 raise Exception(f"save() 'data' must be a list/tuple ({self.data_schema['num_data']}xN array)")
-            
-            if len(data) != self.data_schema['num_data']:
-                raise Exception(f"Expected data to have {self.data_schema['num_data']} rows, got {len(data)}")
+            data = self._normalize_save_data(data)
+            num_rows = len(data)
+            schema_rows = self.data_schema.get('num_data')
+            if schema_rows in (None, -1):
+                self.data_schema['num_data'] = num_rows
+            elif num_rows != schema_rows:
+                raise Exception(f"Expected data to have {schema_rows} row(s), got {num_rows}")
                 
             # Validate data lengths
             vector_len = None
@@ -252,7 +377,7 @@ class VirtualProcessor:
                 elif len(d) != vector_len:
                     raise Exception(f"Data vector lengths mismatch: {vector_len} vs {len(d)}")
             
-            self.logger.info(f"Saving valid data block: params={params}, data_shape=({self.data_schema['num_data']}, {vector_len})")
+            self.logger.info(f"Saving valid data block: params={params}, data_shape=({len(data)}, {vector_len})")
             
             if 'save_data' in self.context:
                 self.context['save_data'](params, data)

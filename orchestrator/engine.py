@@ -77,7 +77,7 @@ class ExperimentEngine:
         self.current_dataset.file_path = file_path
         self.current_dataset.save()
         
-        num_data = schema['num_data']
+        num_data = schema.get('num_data', -1)
         num_params = len(schema['param_axes'])
         
         try:
@@ -85,14 +85,16 @@ class ExperimentEngine:
             self.h5file = h5py.File(file_path, 'w')
             
             # Create 3D dataset for data: (num_data, N, num_saves)
-            self.h5file.create_dataset('data', shape=(num_data, 0, 0), maxshape=(num_data, None, None), dtype='f')
+            # num_data can be dynamic (-1) and set on first save.
+            data_rows = int(num_data) if isinstance(num_data, (int, np.integer)) and int(num_data) >= 0 else 0
+            self.h5file.create_dataset('data', shape=(data_rows, 0, 0), maxshape=(None, None, None), dtype='f')
             
             # Create 2D dataset for params: (num_params, num_saves)
             self.h5file.create_dataset('params', shape=(num_params, 0), maxshape=(num_params, None), dtype='f')
             
             # Save metadata
             self.h5file.attrs['param_axes'] = schema['param_axes']
-            self.h5file.attrs['num_data'] = num_data
+            self.h5file.attrs['num_data'] = int(num_data) if isinstance(num_data, (int, np.integer)) else -1
             self.h5file.attrs['data_width'] = -1
             
             self.log(f"Initialized dataset '{ds_name}': {filename}")
@@ -119,7 +121,7 @@ class ExperimentEngine:
         """
         Handle data saving.
         params: tuple of scalar values (axes) - one per parameter
-        data: tuple/list of 4 vectors, each of length N - shape (4, N)
+        data: numeric array payload; accepted as 1xN or RxN list/tuple
         
         Each save() call adds:
         - One slice to data: data[:, :, i] = new_data (4, N)
@@ -135,10 +137,19 @@ class ExperimentEngine:
             dset_data = self.h5file['data']
             dset_params = self.h5file['params']
             
-            new_data = np.array(data)  # Shape should be (num_data, N)
-            
-            if new_data.ndim != 2 or new_data.shape[0] != self.h5file.attrs['num_data']:
-                raise ValueError(f"Data must be shape ({self.h5file.attrs['num_data']}, N), got {new_data.shape}")
+            new_data = np.array(data, dtype=float)
+            if new_data.ndim == 1:
+                new_data = np.expand_dims(new_data, axis=0)
+            if new_data.ndim != 2:
+                raise ValueError(f"Data must be 1D or 2D numeric array, got {new_data.shape}")
+
+            num_data = int(new_data.shape[0])
+            current_num_data = int(self.h5file.attrs.get('num_data', -1))
+            if current_num_data == -1:
+                self.h5file.attrs['num_data'] = num_data
+                dset_data.resize((num_data, dset_data.shape[1], dset_data.shape[2]))
+            elif num_data != current_num_data:
+                raise ValueError(f"Data row mismatch. Expected {current_num_data}, got {num_data}")
             
             data_width = new_data.shape[1]  # N
             
@@ -147,7 +158,7 @@ class ExperimentEngine:
                 # First save - set the width
                 self.h5file.attrs['data_width'] = data_width
                 # Resize data dataset to have proper N dimension
-                dset_data.resize((self.h5file.attrs['num_data'], data_width, 0))
+                dset_data.resize((int(self.h5file.attrs['num_data']), data_width, 0))
             elif self.h5file.attrs['data_width'] != data_width:
                 raise ValueError(f"Data width mismatch. Expected N={self.h5file.attrs['data_width']}, got N={data_width}")
             
@@ -156,7 +167,7 @@ class ExperimentEngine:
             new_num_saves = num_saves + 1
             
             # Resize to add one more save
-            dset_data.resize((self.h5file.attrs['num_data'], data_width, new_num_saves))
+            dset_data.resize((int(self.h5file.attrs['num_data']), data_width, new_num_saves))
             dset_params.resize((len(params), new_num_saves))
             
             # Add new data slice
