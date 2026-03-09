@@ -14,6 +14,47 @@ import h5py
 import numpy as np
 import random
 import datetime
+import time
+
+
+def _normalize_dataset_for_json(arr: np.ndarray):
+    data = np.asarray(arr)
+    if data.size == 0:
+        return []
+    if data.ndim == 3 and data.shape[-1] == 1:
+        data = data[:, :, 0]
+    return data.tolist()
+
+
+def _open_h5_read(path: str, retries: int = 4, base_delay: float = 0.05):
+    """
+    Open an HDF5 file for read while tolerating transient lock contention.
+    """
+    last_error = None
+    for i in range(retries):
+        # Try lockless read first, then fallback to default locking mode
+        for mode in ('nolock', 'default'):
+            try:
+                if mode == 'nolock':
+                    try:
+                        return h5py.File(path, 'r', locking=False)
+                    except TypeError:
+                        return h5py.File(path, 'r')
+                return h5py.File(path, 'r')
+            except OSError as e:
+                msg = str(e).lower()
+                if 'locking flag values don' in msg and mode == 'nolock':
+                    last_error = e
+                    continue
+                if getattr(e, 'errno', None) == 11 or 'unable to lock file' in msg:
+                    last_error = e
+                    break
+                raise
+        time.sleep(base_delay * (2 ** i))
+    if last_error is not None:
+        raise last_error
+    raise OSError(f"Failed to open HDF5 file for reading: {path}")
+
 
 class ExperimentScriptViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -202,7 +243,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         # Try to inspect HDF5 file for dtype/shape
         try:
             if dataset.file_path and os.path.exists(dataset.file_path):
-                with h5py.File(dataset.file_path, 'r') as f:
+                with _open_h5_read(dataset.file_path) as f:
                     if 'data' in f:
                         d = f['data']
                         info['dtype'] = str(d.dtype)
@@ -228,7 +269,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            with h5py.File(dataset.file_path, 'r') as f:
+            with _open_h5_read(dataset.file_path) as f:
                 if 'data' not in f:
                     return Response({'error': 'Data not present in file'}, status=status.HTTP_404_NOT_FOUND)
                 arr = np.array(f['data'])
@@ -252,7 +293,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                     arr = arr[tuple(slices)]
 
                 if fmt == 'json':
-                    return Response({'rid': experiment_run.id, 'dataset_id': f"ds_{dataset.id}", 'name': dataset.name, 'data': arr.tolist()})
+                    return Response({'rid': experiment_run.id, 'dataset_id': f"ds_{dataset.id}", 'name': dataset.name, 'data': _normalize_dataset_for_json(arr)})
                 elif fmt == 'npy':
                     # Return numpy binary as base64? For now, return error (not implemented)
                     return Response({'error': 'npy format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -278,7 +319,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                 if not ds.file_path:
                     continue
                 try:
-                    with h5py.File(ds.file_path, 'r') as f:
+                    with _open_h5_read(ds.file_path) as f:
                         if 'data' not in f:
                             continue
                         arr = f['data'][:]
@@ -426,11 +467,11 @@ class ArchiveViewSet(viewsets.ModelViewSet):
         if not dataset.file_path or not os.path.exists(dataset.file_path):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
         try:
-            with h5py.File(dataset.file_path, 'r') as f:
+            with _open_h5_read(dataset.file_path) as f:
                 if 'data' not in f:
                     return Response({'error': 'Data not present in file'}, status=status.HTTP_404_NOT_FOUND)
                 arr = np.array(f['data'])
-                return Response({'archive_id': a.id, 'dataset_id': f"ds_{dataset.id}", 'name': dataset.name, 'data': arr.tolist()})
+                return Response({'archive_id': a.id, 'dataset_id': f"ds_{dataset.id}", 'name': dataset.name, 'data': _normalize_dataset_for_json(arr)})
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
