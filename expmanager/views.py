@@ -26,7 +26,22 @@ def _normalize_dataset_for_json(arr: np.ndarray):
     return data.tolist()
 
 
-def _open_h5_read(path: str, retries: int = 4, base_delay: float = 0.05):
+def _is_transient_h5_open_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    if isinstance(err, OSError) and getattr(err, 'errno', None) == 11:
+        return True
+    transient_markers = (
+        'unable to lock file',
+        'resource temporarily unavailable',
+        'truncated file',
+        'stored_eof',
+        'eof =',
+        "file locking flag values don't match",
+    )
+    return any(marker in msg for marker in transient_markers)
+
+
+def _open_h5_read(path: str, retries: int = 8, base_delay: float = 0.05):
     """
     Open an HDF5 file for read while tolerating transient lock contention.
     """
@@ -46,7 +61,7 @@ def _open_h5_read(path: str, retries: int = 4, base_delay: float = 0.05):
                 if 'locking flag values don' in msg and mode == 'nolock':
                     last_error = e
                     continue
-                if getattr(e, 'errno', None) == 11 or 'unable to lock file' in msg:
+                if _is_transient_h5_open_error(e):
                     last_error = e
                     break
                 raise
@@ -187,6 +202,13 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         try:
             task = run_experiment_task.delay(experiment_run.id)
             return Response({'status': 'Experiment queued', 'task_id': task.id})
+        except OSError as e:
+            if _is_transient_h5_open_error(e):
+                return Response(
+                    {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -300,6 +322,13 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                 elif fmt == 'hdf5':
                     return Response({'error': 'hdf5 format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
+        except OSError as e:
+            if _is_transient_h5_open_error(e):
+                return Response(
+                    {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
