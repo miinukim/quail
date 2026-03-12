@@ -17,13 +17,88 @@ import datetime
 import time
 
 
-def _normalize_dataset_for_json(arr: np.ndarray):
-    data = np.asarray(arr)
-    if data.size == 0:
+def _coerce_str_list(v):
+    if isinstance(v, np.ndarray):
+        v = v.tolist()
+    if not isinstance(v, (list, tuple)):
         return []
-    if data.ndim == 3 and data.shape[-1] == 1:
-        data = data[:, :, 0]
-    return data.tolist()
+    out = []
+    for x in v:
+        s = str(x)
+        out.append(s)
+    return out
+
+
+def _dataset_to_point_rows(data_arr: np.ndarray, params_arr: np.ndarray | None, metadata: dict | None = None):
+    """
+    Convert HDF5 datasets into point rows:
+      [param_0, ..., param_P-1, data_row0, ..., data_rowR-1]
+    for each (save_index, data_index) point.
+    """
+    md = metadata or {}
+    data = np.asarray(data_arr)
+    if data.size == 0:
+        return {"columns": _coerce_str_list(md.get("param_axes", [])), "data": []}
+
+    # Normalize data to (R, N, S)
+    if data.ndim == 1:
+        data = data.reshape(1, data.shape[0], 1)
+    elif data.ndim == 2:
+        data = data[:, :, np.newaxis]
+    elif data.ndim == 3:
+        expected_rows = md.get("num_data")
+        try:
+            expected_rows = int(expected_rows)
+        except Exception:
+            expected_rows = None
+        if expected_rows is not None and expected_rows >= 0:
+            if data.shape[0] == expected_rows:
+                pass
+            elif data.shape[1] == expected_rows:
+                data = np.transpose(data, (1, 0, 2))
+        # If no explicit schema, keep as stored.
+    else:
+        flat = data.reshape(-1).tolist()
+        return {"columns": ["value"], "data": [[v] for v in flat]}
+
+    rows_count, width_count, saves_count = data.shape
+
+    # Normalize params to (P, S)
+    if params_arr is None:
+        params = np.zeros((0, saves_count), dtype=float)
+    else:
+        params = np.asarray(params_arr)
+        if params.ndim == 1:
+            params = params[:, np.newaxis]
+        if params.ndim != 2:
+            params = params.reshape(params.shape[0], -1)
+        if params.shape[1] == 0:
+            params = np.zeros((params.shape[0], saves_count), dtype=float)
+        elif params.shape[1] != saves_count:
+            # Align by first available save if counts differ.
+            if params.shape[1] == 1:
+                params = np.repeat(params, saves_count, axis=1)
+            else:
+                params = params[:, :saves_count]
+
+    param_axes = _coerce_str_list(md.get("param_axes", []))
+    if len(param_axes) != params.shape[0]:
+        param_axes = [f"param{i}" for i in range(params.shape[0])]
+
+    data_axes = _coerce_str_list(md.get("data_axes", []))
+    if len(data_axes) == rows_count:
+        data_cols = [name if name != "_" else f"row{i}" for i, name in enumerate(data_axes)]
+    else:
+        data_cols = [f"row{i}" for i in range(rows_count)]
+
+    out_rows = []
+    for s in range(saves_count):
+        pvals = params[:, s].tolist() if params.shape[0] > 0 else []
+        for n in range(width_count):
+            dvals = data[:, n, s].tolist()
+            out_rows.append(pvals + dvals)
+
+    return {"columns": param_axes + data_cols, "data": out_rows}
 
 
 def _is_transient_h5_open_error(err: Exception) -> bool:
@@ -295,6 +370,14 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                 if 'data' not in f:
                     return Response({'error': 'Data not present in file'}, status=status.HTTP_404_NOT_FOUND)
                 arr = np.array(f['data'])
+                params_arr = np.array(f['params']) if 'params' in f else None
+                combined_meta = dict(dataset.metadata or {})
+                for key in ('param_axes', 'data_axes', 'num_data'):
+                    if key in f.attrs:
+                        val = f.attrs.get(key)
+                        if isinstance(val, np.ndarray):
+                            val = val.tolist()
+                        combined_meta[key] = val
 
                 # Basic slice parser: dims separated by comma, each is start:stop or ':'
                 if slice_expr:
@@ -315,7 +398,14 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                     arr = arr[tuple(slices)]
 
                 if fmt == 'json':
-                    return Response({'rid': experiment_run.id, 'dataset_id': f"ds_{dataset.id}", 'name': dataset.name, 'data': _normalize_dataset_for_json(arr)})
+                    table = _dataset_to_point_rows(arr, params_arr, combined_meta)
+                    return Response({
+                        'rid': experiment_run.id,
+                        'dataset_id': f"ds_{dataset.id}",
+                        'name': dataset.name,
+                        'columns': table['columns'],
+                        'data': table['data'],
+                    })
                 elif fmt == 'npy':
                     # Return numpy binary as base64? For now, return error (not implemented)
                     return Response({'error': 'npy format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -500,7 +590,22 @@ class ArchiveViewSet(viewsets.ModelViewSet):
                 if 'data' not in f:
                     return Response({'error': 'Data not present in file'}, status=status.HTTP_404_NOT_FOUND)
                 arr = np.array(f['data'])
-                return Response({'archive_id': a.id, 'dataset_id': f"ds_{dataset.id}", 'name': dataset.name, 'data': _normalize_dataset_for_json(arr)})
+                params_arr = np.array(f['params']) if 'params' in f else None
+                combined_meta = dict(dataset.metadata or {})
+                for key in ('param_axes', 'data_axes', 'num_data'):
+                    if key in f.attrs:
+                        val = f.attrs.get(key)
+                        if isinstance(val, np.ndarray):
+                            val = val.tolist()
+                        combined_meta[key] = val
+                table = _dataset_to_point_rows(arr, params_arr, combined_meta)
+                return Response({
+                    'archive_id': a.id,
+                    'dataset_id': f"ds_{dataset.id}",
+                    'name': dataset.name,
+                    'columns': table['columns'],
+                    'data': table['data'],
+                })
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

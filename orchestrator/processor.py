@@ -52,6 +52,22 @@ class VirtualProcessor:
     def _is_number(v):
         return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
 
+    @staticmethod
+    def _normalize_axis_names(raw_axes, field_name, allow_placeholder=False):
+        if not isinstance(raw_axes, (list, tuple)):
+            raise Exception(f"'{field_name}' argument in init_data must be a tuple of strings")
+        axes = []
+        for i, item in enumerate(raw_axes):
+            if not isinstance(item, str):
+                raise Exception(f"'{field_name}' axis at index {i} must be a string")
+            name = item.strip()
+            if not name:
+                raise Exception(f"'{field_name}' axis at index {i} cannot be empty")
+            if name == '_' and not allow_placeholder:
+                raise Exception(f"'_' placeholder is only allowed in '{field_name}' axes")
+            axes.append(name)
+        return axes
+
     def _normalize_run_data(self, data):
         """
         Normalize FPGA output to an N x 4 numeric table when possible.
@@ -83,11 +99,19 @@ class VirtualProcessor:
         if data and all(isinstance(row, (list, tuple)) for row in data):
             rows = [list(row) for row in data]
             if all(all(self._is_number(v) for v in row) for row in rows):
-                # Common sequencer format: 4 x N -> transpose to N x 4
-                if len(rows) == 4:
-                    return [list(col) for col in zip(*rows)]
-                # Already N x 4
-                if all(len(row) == 4 for row in rows):
+                # Respect declared schema rows if available.
+                schema_rows = None
+                if isinstance(self.data_schema, dict):
+                    v = self.data_schema.get('num_data')
+                    if isinstance(v, (int, np.integer)) and int(v) >= 0:
+                        schema_rows = int(v)
+                if schema_rows is not None and len(rows) > 0:
+                    if len(rows) == schema_rows:
+                        return rows
+                    if all(len(r) == len(rows[0]) for r in rows) and len(rows[0]) == schema_rows:
+                        return [list(col) for col in zip(*rows)]
+                # No schema yet: preserve row-major payload as provided.
+                if all(len(row) == len(rows[0]) for row in rows):
                     return rows
                 return rows
 
@@ -321,15 +345,33 @@ class VirtualProcessor:
             if 'param' not in kwargs:
                 raise Exception("init_data requires 'param' argument")
             
-            params = kwargs['param']
-            if not isinstance(params, (list, tuple)):
-                raise Exception("'param' argument in init_data must be a tuple of strings")
+            params = self._normalize_axis_names(kwargs['param'], 'param', allow_placeholder=False)
+            data_axes = None
+            data_axes_effective = []
+            if 'data' in kwargs:
+                data_axes = self._normalize_axis_names(kwargs['data'], 'data', allow_placeholder=True)
+                data_axes_effective = [name for name in data_axes if name != '_']
             
             num_data = kwargs.get('num_data', None)
+            if num_data is not None:
+                if not isinstance(num_data, (int, np.integer)):
+                    raise Exception("init_data 'num_data' must be an integer")
+                num_data = int(num_data)
+                if num_data < -1:
+                    raise Exception("init_data 'num_data' must be >= -1")
+            if data_axes is not None:
+                if num_data in (None, -1):
+                    num_data = len(data_axes)
+                elif num_data != len(data_axes):
+                    raise Exception(
+                        f"init_data mismatch: num_data={num_data} but data axes has {len(data_axes)} entries"
+                    )
                 
             self.data_schema = {
                 'param_axes': params,
-                'num_data': num_data
+                'num_data': num_data,
+                'data_axes': data_axes,
+                'data_axes_effective': data_axes_effective
             }
             self.logger.info(f"Initialized data schema: {self.data_schema}")
             
@@ -366,6 +408,11 @@ class VirtualProcessor:
                 self.data_schema['num_data'] = num_rows
             elif num_rows != schema_rows:
                 raise Exception(f"Expected data to have {schema_rows} row(s), got {num_rows}")
+            schema_axes = self.data_schema.get('data_axes')
+            if schema_axes is not None and len(schema_axes) != num_rows:
+                raise Exception(
+                    f"Expected data rows to match init_data(data=...) axes length {len(schema_axes)}, got {num_rows}"
+                )
                 
             # Validate data lengths
             vector_len = None

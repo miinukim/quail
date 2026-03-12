@@ -96,6 +96,9 @@ class ExperimentEngine:
             self.h5file.attrs['param_axes'] = schema['param_axes']
             self.h5file.attrs['num_data'] = int(num_data) if isinstance(num_data, (int, np.integer)) else -1
             self.h5file.attrs['data_width'] = -1
+            if schema.get('data_axes') is not None:
+                self.h5file.attrs['data_axes'] = schema['data_axes']
+                self.h5file.attrs['data_axes_effective'] = schema.get('data_axes_effective', [])
             
             self.log(f"Initialized dataset '{ds_name}': {filename}")
             

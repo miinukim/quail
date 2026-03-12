@@ -119,7 +119,7 @@ class Lexer:
             if self.current_char == '"':
                 return self.string()
             
-            if self.current_char.isalpha():
+            if self.current_char.isalpha() or self.current_char == '_':
                 return self.identifier()
             
             if self.current_char == '=':

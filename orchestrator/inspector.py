@@ -66,6 +66,28 @@ def _infer_type(value: Any) -> str:
     return "string"
 
 
+def _extract_axis_names(node: Any, vars_map: Dict[str, Any]) -> list[str]:
+    val = _safe_eval(node, vars_map)
+    if isinstance(val, (list, tuple)) and all(isinstance(v, str) for v in val):
+        return [str(v) for v in val]
+    if isinstance(node, dict) and node.get("type") == "TUPLE":
+        out: list[str] = []
+        for item in node.get("items", []):
+            if isinstance(item, str):
+                out.append(item)
+                continue
+            if isinstance(item, dict) and item.get("type") == "VAR":
+                out.append(str(item.get("name")))
+                continue
+            resolved = _safe_eval(item, vars_map)
+            if isinstance(resolved, str):
+                out.append(resolved)
+                continue
+            return []
+        return out
+    return []
+
+
 def inspect_script(code: str) -> Dict[str, Any]:
     """
     Parse script and infer parameter schema and defaults.
@@ -84,6 +106,8 @@ def inspect_script(code: str) -> Dict[str, Any]:
     parameters_schema: Dict[str, Dict[str, Any]] = {}
     param_values: Dict[str, Any] = {}
     param_axes = []
+    data_axes = []
+    data_axes_effective = []
 
     def apply_param(name: str, value: Any, dtype: Optional[str] = None) -> None:
         if name in parameters_schema:
@@ -95,6 +119,7 @@ def inspect_script(code: str) -> Dict[str, Any]:
         parameters_schema[name] = schema
 
     def walk(statements):
+        nonlocal param_axes, data_axes, data_axes_effective
         for stmt in statements:
             stype = stmt.get("type")
             if stype == "PARAM":
@@ -131,10 +156,9 @@ def inspect_script(code: str) -> Dict[str, Any]:
                 walk(stmt.get("false_body", []) or [])
             elif stype == "INIT_DATA":
                 kwargs = stmt.get("kwargs", {})
-                raw = kwargs.get("param")
-                val = _safe_eval(raw, vars_map)
-                if isinstance(val, (list, tuple)):
-                    param_axes.extend([str(v) for v in val])
+                param_axes = _extract_axis_names(kwargs.get("param"), vars_map) or param_axes
+                data_axes = _extract_axis_names(kwargs.get("data"), vars_map) or data_axes
+                data_axes_effective = [name for name in data_axes if name != "_"]
 
     walk(ast)
 
@@ -142,4 +166,6 @@ def inspect_script(code: str) -> Dict[str, Any]:
         "parameters_schema": parameters_schema,
         "param_values": param_values,
         "param_axes": param_axes,
+        "data_axes": data_axes,
+        "data_axes_effective": data_axes_effective,
     }

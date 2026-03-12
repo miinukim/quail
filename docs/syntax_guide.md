@@ -72,19 +72,27 @@ d = run("seq1", "code.py");
 
 ### 5. Initializing Data
 Define the structure of the data table before saving. This must be called before any `save()` command.
+You can define both parameter axes (`param`) and row labels for sequencer outputs (`data`).
 
 **Syntax:**
 ```text
-init_data(param=(<axis1>, <axis2>, ...));
+init_data(param=(<axis1>, <axis2>, ...), data=(<row1>, <row2>, ...));
 ```
 
 **Example:**
 ```text
-init_data(param=("voltage", "current"));
+init_data(param=("voltage", "current"), data=("x", "y", "z", _));
+
+# Notes
+# - `data` length defines expected row count for each save block.
+# - Use `_` as an unlabeled placeholder row.
+# - Metadata stores:
+#   param_axes, data_axes, data_axes_effective (without `_`)
 ```
 
 ### 6. Saving Data
-Save data points to the experiment log/database. The arguments must match the initialized schema. `data` accepts a single data object (4xN array).
+Save data points to the experiment log/database. The arguments must match the initialized schema.
+When `init_data(data=...)` is given, `save(..., data=...)` must have the same number of rows.
 
 **Syntax:**
 ```text
@@ -153,8 +161,9 @@ if (v > 2.5) : {
 ## Example Script
 ```text
 # Initialize data table schema
-# param: tuple of axis names
-init_data(param=("v", "i"));
+# param: tuple of parameter-axis names
+# data: tuple of row labels for sequencer output rows
+init_data(param=("v", "i"), data=("x", "y", "z", _));
 
 # Define a threshold
 param float threshold = 3.0;
@@ -178,7 +187,7 @@ for v in (from -5 to 5 step 0.5) : {
     
     # Save data matching the initialized schema
     # params: tuple of scalar values for axes
-    # data: single data object (4xN array)
+    # data: single data object (RxN array), where R matches init_data(data=...)
     save(params=(v, i), data=d);
 }
 ```
