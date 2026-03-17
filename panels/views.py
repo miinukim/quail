@@ -189,13 +189,7 @@ class PanelViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='inspect-classes')
     def inspect_classes(self, request):
-        # Placeholder: replace with real script inspection
-        script_path = request.data.get('script_path')
-        if not script_path:
-            return Response({'error': 'script_path required'}, status=status.HTTP_400_BAD_REQUEST)
-        # Placeholder: replace with real script inspection
-        classes = ['CoolingScan', 'RabiScan', 'RamseyScan']
-        return Response({'script_path': script_path, 'classes': classes}, status=status.HTTP_200_OK)
+        return Response({}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
     @action(detail=False, methods=['get'])
     def listPanels(self, request):
