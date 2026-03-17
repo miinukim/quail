@@ -1,6 +1,7 @@
 from django.test import TestCase
 from django.contrib.auth.models import User
-from expmanager.models import ExperimentScript, ExperimentRun
+from django.conf import settings
+from expmanager.models import ExperimentScript, ExperimentRun, Dataset
 from orchestrator.engine import ExperimentEngine
 import subprocess
 import sys
@@ -37,33 +38,26 @@ class ExperimentEngineTest(TestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(username='testuser', password='password')
+        self.script_code = """
+            init_data(param=("x",), data=("r0", "r1", "r2", "r3"));
+            set device.freq 100.0;
+            val = get device.freq;
+            d1 = (1, 2, 3, 4, 5);
+            d2 = (6, 7, 8, 9, 10);
+            d3 = (11, 12, 13, 14, 15);
+            d4 = (16, 17, 18, 19, 20);
+            data_block = (d1, d2, d3, d4);
+            for i in (from 0 to 2 step 1) : {
+                save(params=(i,), data=data_block);
+            }
+        """
+        self.script_path = os.path.join(settings.USER_SCRIPTS_DIR, 'orchestrator_test.qil')
+        os.makedirs(settings.USER_SCRIPTS_DIR, exist_ok=True)
+        with open(self.script_path, 'w', encoding='utf-8') as f:
+            f.write(self.script_code)
         self.script = ExperimentScript.objects.create(
             name="Test Script",
-            script_code="""
-            # Initialize data with 1 parameter axis 'x'
-            # num_data is hardcoded to 4 in VirtualProcessor for now
-            init_data(param=("x",))
-            
-            # Set a parameter on the instrument
-            set device.freq 100.0
-            
-            # Get the parameter back
-            param val = get device.freq
-            
-            # Create some dummy data vectors (length 5)
-            d1 = (1, 2, 3, 4, 5)
-            d2 = (6, 7, 8, 9, 10)
-            d3 = (11, 12, 13, 14, 15)
-            d4 = (16, 17, 18, 19, 20)
-            
-            data_block = (d1, d2, d3, d4)
-            
-            # Loop 3 times
-            for i in (from 0 to 2 step 1) {
-                # Save data: params must be a tuple matching param_axes
-                save(params=(i,), data=data_block)
-            }
-            """,
+            script_path=self.script_path,
             author=self.user
         )
         self.run_obj = ExperimentRun.objects.create(
@@ -71,9 +65,14 @@ class ExperimentEngineTest(TestCase):
             user=self.user
         )
 
+    def tearDown(self):
+        if os.path.exists(self.script_path):
+            os.remove(self.script_path)
+
     @patch('orchestrator.engine.get_channel_layer')
     @patch('orchestrator.engine.async_to_sync')
-    def test_experiment_execution(self, mock_async_to_sync, mock_get_channel_layer):
+    @patch('orchestrator.engine.InstrumentClient.health_check', return_value={"ok": True})
+    def test_experiment_execution(self, mock_health_check, mock_async_to_sync, mock_get_channel_layer):
         # Mock the channel layer to avoid Redis dependency
         mock_channel_layer = MagicMock()
         mock_get_channel_layer.return_value = mock_channel_layer
@@ -86,12 +85,11 @@ class ExperimentEngineTest(TestCase):
         engine = ExperimentEngine(self.run_obj)
         engine.run()
         
-        # Verify data file was created
-        self.run_obj.refresh_from_db()
-        self.assertTrue(os.path.exists(self.run_obj.data_file))
+        dataset = Dataset.objects.get(experiment_run=self.run_obj)
+        self.assertTrue(os.path.exists(dataset.file_path))
         
         # Verify data content
-        with h5py.File(self.run_obj.data_file, 'r') as f:
+        with h5py.File(dataset.file_path, 'r') as f:
             # Check attributes
             self.assertEqual(f.attrs['num_data'], 4)
             self.assertEqual(f.attrs['data_width'], 5) # Length of d1
@@ -116,5 +114,5 @@ class ExperimentEngineTest(TestCase):
             np.testing.assert_array_equal(data[0, :, 2], [1, 2, 3, 4, 5])
 
         # Clean up data file
-        if os.path.exists(self.run_obj.data_file):
-            os.remove(self.run_obj.data_file)
+        if os.path.exists(dataset.file_path):
+            os.remove(dataset.file_path)

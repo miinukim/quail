@@ -11,8 +11,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from .models import Panel, PanelConfig
 from .serializers import PanelSerializer, PanelCreateSerializer
-from expmanager.models import ExperimentScript, ExperimentRun
-from expmanager.tasks import run_experiment_task
+from expmanager.models import ExperimentScript
+from expmanager.scheduling import normalize_timezone_name, schedule_run
 from orchestrator.inspector import inspect_script
 
 
@@ -28,7 +28,9 @@ def panel_default_schedule():
         'priority': 3,
         'schedule_type': 'NOW',
         'scheduled_at': None,
-        'interval_min': None
+        'interval_min': None,
+        'timezone': 'UTC',
+        'recurrence': None,
     }
 
 def normalize_priority(value, default=3):
@@ -37,10 +39,10 @@ def normalize_priority(value, default=3):
     if isinstance(value, int):
         return value
     if isinstance(value, str):
-        if value.isdigit():
-            return int(value)
-        mapping = {'LOW': 1, 'NORMAL': 2, 'HIGH': 3, 'CRITICAL': 4}
-        return mapping.get(value.upper(), default)
+        try:
+            return int(value.strip())
+        except Exception:
+            return default
     return default
 
 logger = logging.getLogger("quail.inspect")
@@ -261,9 +263,11 @@ class PanelViewSet(viewsets.ModelViewSet):
         body = request.data.copy()
         param_values = body.get('param_values', panel.param_values or {})
         priority = normalize_priority(body.get('priority', panel.schedule_defaults.get('priority', 3)))
-        schedule_type = body.get('schedule_type', panel.schedule_defaults.get('schedule_type', 'NOW'))
+        schedule_type = str(body.get('schedule_type', panel.schedule_defaults.get('schedule_type', 'NOW'))).upper()
         scheduled_at = body.get('scheduled_at', panel.schedule_defaults.get('scheduled_at'))
         interval_min = body.get('interval_min', panel.schedule_defaults.get('interval_min'))
+        timezone_name = normalize_timezone_name(body.get('timezone', panel.schedule_defaults.get('timezone', 'UTC')))
+        recurrence = body.get('recurrence', panel.schedule_defaults.get('recurrence'))
 
         if isinstance(param_values, dict):
             panel.param_values = param_values
@@ -273,33 +277,31 @@ class PanelViewSet(viewsets.ModelViewSet):
         user_for_run = request.user if request.user.is_authenticated else panel.author
         if user_for_run is None:
             return Response({'error': 'Authentication required to start run or panel lacks author'}, status=status.HTTP_400_BAD_REQUEST)
-
-        # If NOW, create run immediately and dispatch
-        if schedule_type == 'NOW' or schedule_type == 'now':
-            run = ExperimentRun.objects.create(
-                script_path=panel.script_path,
-                script=None,
-                arguments=param_values,
+        if schedule_type == 'RECURRING' and not recurrence and interval_min:
+            recurrence = {
+                'kind': 'interval',
+                'interval_min': interval_min,
+                'start_immediately': True,
+            }
+        try:
+            response, _instance = schedule_run(
                 user=user_for_run,
+                script_path=panel.script_path,
+                arguments=param_values if isinstance(param_values, dict) else {},
                 name=panel.name,
-                status='QUEUED',
                 priority=priority,
                 schedule_type=schedule_type,
-                scheduled_at=scheduled_at if scheduled_at else None,
-                interval_min=interval_min
+                timezone_name=timezone_name,
+                scheduled_at=scheduled_at,
+                recurrence=recurrence,
+                panel=panel,
             )
-            try:
-                run_experiment_task.delay(run.id)
-            except Exception as e:
-                print(f"Failed to dispatch run {run.id}: {e}")
-            return Response({'panel_id': panel.panel_id, 'status': 'QUEUED', 'name': panel.name, 'parameters_schema': panel.parameters_schema})
-        else:
-            # For TIMED or RECURRING, schedule via panels.tasks to manage recurring behavior
-            from .tasks import process_panel_run
-            process_panel_run.apply_async((panel.panel_id, param_values, priority, schedule_type, scheduled_at, interval_min))
-            return Response({'panel_id': panel.panel_id, 'status': 'SCHEDULED', 'name': panel.name})
-
-        return Response({'panel_id': panel.panel_id, 'status': 'QUEUED', 'name': panel.name, 'parameters_schema': panel.parameters_schema})
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        response['panel_id'] = panel.panel_id
+        response['name'] = panel.name
+        response['parameters_schema'] = panel.parameters_schema
+        return Response(response)
 
 
 class PanelConfigViewSet(viewsets.ViewSet):

@@ -2,8 +2,13 @@
 ExperimentScript/Run/Dataset/RunLog models.
 These represent the core execution and data artifacts.
 """
+import uuid
 from django.db import models
 from django.contrib.auth.models import User
+
+
+def generate_schedule_id():
+    return f"sch_{uuid.uuid4().hex[:10]}"
 
 class ExperimentScript(models.Model):
     """
@@ -30,13 +35,6 @@ class ExperimentRun(models.Model):
         ('ABORTED', 'Aborted'),
     ]
 
-    PRIORITY_CHOICES = [
-        (1, 'Low'),
-        (2, 'Normal'),
-        (3, 'High'),
-        (4, 'Critical'),
-    ]
-
     SCHEDULE_CHOICES = [
         ('NOW', 'Immediate'),
         ('TIMED', 'Scheduled Time'),
@@ -55,10 +53,12 @@ class ExperimentRun(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='QUEUED')
     
     # Scheduling & Priority
-    priority = models.IntegerField(choices=PRIORITY_CHOICES, default=2)
+    priority = models.IntegerField(default=2)
     schedule_type = models.CharField(max_length=10, choices=SCHEDULE_CHOICES, default='NOW')
     scheduled_at = models.DateTimeField(null=True, blank=True)
     interval_min = models.IntegerField(null=True, blank=True, help_text="Recurring interval in minutes")
+    schedule = models.ForeignKey('ExperimentSchedule', related_name='runs', on_delete=models.SET_NULL, null=True, blank=True)
+    dispatch_task_id = models.CharField(max_length=255, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -78,6 +78,45 @@ class ExperimentRun(models.Model):
     def __str__(self):
         name = self.script.name if self.script else "Ad-hoc Run"
         return f"Run {self.id}: {name} ({self.status})"
+
+
+class ExperimentSchedule(models.Model):
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+        ('FAILED', 'Failed'),
+    ]
+
+    SCHEDULE_CHOICES = [
+        ('TIMED', 'Scheduled Time'),
+        ('RECURRING', 'Recurring'),
+    ]
+
+    schedule_id = models.CharField(max_length=32, unique=True, default=generate_schedule_id)
+    panel = models.ForeignKey('panels.Panel', null=True, blank=True, on_delete=models.SET_NULL)
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255, blank=True, default="")
+    script_path = models.CharField(max_length=512, help_text="Path used for this schedule", blank=True)
+    arguments = models.JSONField(default=dict, blank=True, help_text="Runtime arguments for the scheduled execution")
+    priority = models.IntegerField(default=2)
+    schedule_type = models.CharField(max_length=16, choices=SCHEDULE_CHOICES)
+    scheduled_at = models.DateTimeField(null=True, blank=True)
+    timezone = models.CharField(max_length=64, default='UTC')
+    recurrence = models.JSONField(default=dict, blank=True)
+    next_run_at = models.DateTimeField(null=True, blank=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if not self.name and self.script_path:
+            self.name = self.script_path.split("/")[-1]
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Schedule {self.schedule_id}: {self.name} ({self.status})"
 
 class Dataset(models.Model):
     """

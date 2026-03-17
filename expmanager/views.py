@@ -2,14 +2,23 @@
 REST API endpoints for scripts, runs, logs, datasets, and file browsing.
 This is the main entry point for the frontend to manage experiment lifecycle.
 """
-from django.shortcuts import render
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.contrib.auth.models import User
+from django.utils import timezone
 from .models import ExperimentScript, ExperimentRun, RunLog, Dataset, Archive
 from .serializers import ExperimentScriptSerializer, ExperimentRunSerializer, ExperimentRunListSerializer, RunLogSerializer, DatasetSerializer, ArchiveSerializer
 from .tasks import run_experiment_task
+from .scheduling import (
+    cancel_schedule,
+    normalize_schedule_type,
+    normalize_timezone_name,
+    schedule_run,
+)
+from .dataset_payloads import dataset_to_point_rows, is_transient_h5_open_error, open_h5_read
+from .dataset_query import DatasetQueryError, execute_query
 import h5py
 import numpy as np
 import random
@@ -17,133 +26,40 @@ import datetime
 import time
 
 
-def _coerce_str_list(v):
-    if isinstance(v, np.ndarray):
-        v = v.tolist()
-    if not isinstance(v, (list, tuple)):
-        return []
-    out = []
-    for x in v:
-        s = str(x)
-        out.append(s)
-    return out
+def _load_dataset_table(dataset, slice_expr=None):
+    with open_h5_read(dataset.file_path) as f:
+        if 'data' not in f:
+            raise KeyError('Data not present in file')
+        arr = np.array(f['data'])
+        params_arr = np.array(f['params']) if 'params' in f else None
+        combined_meta = dict(dataset.metadata or {})
+        for key in ('param_axes', 'data_axes', 'data_axes_effective', 'num_data'):
+            if key in f.attrs:
+                val = f.attrs.get(key)
+                if isinstance(val, np.ndarray):
+                    val = val.tolist()
+                combined_meta[key] = val
+
+        if slice_expr:
+            slices = []
+            for part in slice_expr.split(','):
+                part = part.strip()
+                if part == ':' or part == '':
+                    slices.append(slice(None))
+                else:
+                    if ':' in part:
+                        s, e = part.split(':')
+                        start = int(s) if s != '' else None
+                        stop = int(e) if e != '' else None
+                        slices.append(slice(start, stop))
+                    else:
+                        slices.append(int(part))
+            arr = arr[tuple(slices)]
+
+        table = dataset_to_point_rows(arr, params_arr, combined_meta)
+        return table, combined_meta
 
 
-def _dataset_to_point_rows(data_arr: np.ndarray, params_arr: np.ndarray | None, metadata: dict | None = None):
-    """
-    Convert HDF5 datasets into point rows:
-      [param_0, ..., param_P-1, data_row0, ..., data_rowR-1]
-    for each (save_index, data_index) point.
-    """
-    md = metadata or {}
-    data = np.asarray(data_arr)
-    if data.size == 0:
-        return {"columns": _coerce_str_list(md.get("param_axes", [])), "data": []}
-
-    # Normalize data to (R, N, S)
-    if data.ndim == 1:
-        data = data.reshape(1, data.shape[0], 1)
-    elif data.ndim == 2:
-        data = data[:, :, np.newaxis]
-    elif data.ndim == 3:
-        expected_rows = md.get("num_data")
-        try:
-            expected_rows = int(expected_rows)
-        except Exception:
-            expected_rows = None
-        if expected_rows is not None and expected_rows >= 0:
-            if data.shape[0] == expected_rows:
-                pass
-            elif data.shape[1] == expected_rows:
-                data = np.transpose(data, (1, 0, 2))
-        # If no explicit schema, keep as stored.
-    else:
-        flat = data.reshape(-1).tolist()
-        return {"columns": ["value"], "data": [[v] for v in flat]}
-
-    rows_count, width_count, saves_count = data.shape
-
-    # Normalize params to (P, S)
-    if params_arr is None:
-        params = np.zeros((0, saves_count), dtype=float)
-    else:
-        params = np.asarray(params_arr)
-        if params.ndim == 1:
-            params = params[:, np.newaxis]
-        if params.ndim != 2:
-            params = params.reshape(params.shape[0], -1)
-        if params.shape[1] == 0:
-            params = np.zeros((params.shape[0], saves_count), dtype=float)
-        elif params.shape[1] != saves_count:
-            # Align by first available save if counts differ.
-            if params.shape[1] == 1:
-                params = np.repeat(params, saves_count, axis=1)
-            else:
-                params = params[:, :saves_count]
-
-    param_axes = _coerce_str_list(md.get("param_axes", []))
-    if len(param_axes) != params.shape[0]:
-        param_axes = [f"param{i}" for i in range(params.shape[0])]
-
-    data_axes = _coerce_str_list(md.get("data_axes", []))
-    if len(data_axes) == rows_count:
-        data_cols = [name if name != "_" else f"row{i}" for i, name in enumerate(data_axes)]
-    else:
-        data_cols = [f"row{i}" for i in range(rows_count)]
-
-    out_rows = []
-    for s in range(saves_count):
-        pvals = params[:, s].tolist() if params.shape[0] > 0 else []
-        for n in range(width_count):
-            dvals = data[:, n, s].tolist()
-            out_rows.append(pvals + dvals)
-
-    return {"columns": param_axes + data_cols, "data": out_rows}
-
-
-def _is_transient_h5_open_error(err: Exception) -> bool:
-    msg = str(err).lower()
-    if isinstance(err, OSError) and getattr(err, 'errno', None) == 11:
-        return True
-    transient_markers = (
-        'unable to lock file',
-        'resource temporarily unavailable',
-        'truncated file',
-        'stored_eof',
-        'eof =',
-        "file locking flag values don't match",
-    )
-    return any(marker in msg for marker in transient_markers)
-
-
-def _open_h5_read(path: str, retries: int = 8, base_delay: float = 0.05):
-    """
-    Open an HDF5 file for read while tolerating transient lock contention.
-    """
-    last_error = None
-    for i in range(retries):
-        # Try lockless read first, then fallback to default locking mode
-        for mode in ('nolock', 'default'):
-            try:
-                if mode == 'nolock':
-                    try:
-                        return h5py.File(path, 'r', locking=False)
-                    except TypeError:
-                        return h5py.File(path, 'r')
-                return h5py.File(path, 'r')
-            except OSError as e:
-                msg = str(e).lower()
-                if 'locking flag values don' in msg and mode == 'nolock':
-                    last_error = e
-                    continue
-                if _is_transient_h5_open_error(e):
-                    last_error = e
-                    break
-                raise
-        time.sleep(base_delay * (2 ** i))
-    if last_error is not None:
-        raise last_error
-    raise OSError(f"Failed to open HDF5 file for reading: {path}")
 
 
 class ExperimentScriptViewSet(viewsets.ModelViewSet):
@@ -189,10 +105,10 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         if isinstance(value, int):
             return value
         if isinstance(value, str):
-            if value.isdigit():
-                return int(value)
-            mapping = {'LOW': 1, 'NORMAL': 2, 'HIGH': 3, 'CRITICAL': 4}
-            return mapping.get(value.upper())
+            try:
+                return int(value.strip())
+            except Exception:
+                return None
         return None
 
     def list(self, request, *args, **kwargs):
@@ -220,52 +136,95 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         return Response({'items': serializer.data, 'next_cursor': None})
 
     def create(self, request, *args, **kwargs):
-        # Allow panel_id-based runs and normalize priority/user fields.
+        # Allow panel_id-based runs and normalize scheduling in one place.
         data = request.data.copy()
         if request.user and request.user.is_authenticated and 'user' not in data:
             data['user'] = request.user.id
-        if 'priority' in data:
-            normalized = self._normalize_priority(data.get('priority'))
-            if normalized is not None:
-                data['priority'] = normalized
         panel_id = data.pop('panel_id', None)
         panel = None
         if panel_id:
             try:
-                from quail.panels.models import Panel
+                from panels.models import Panel
                 panel = Panel.objects.get(panel_id=panel_id)
                 # Use panel defaults if not provided
                 data.setdefault('script_path', panel.script_path)
-                data.setdefault('arguments', panel.param_values or {})
+                data.setdefault('arguments', data.get('param_values') or panel.param_values or {})
                 data.setdefault('name', panel.name)
+                defaults = panel.schedule_defaults or {}
+                data.setdefault('priority', defaults.get('priority', 3))
+                data.setdefault('schedule_type', defaults.get('schedule_type', 'NOW'))
+                data.setdefault('scheduled_at', defaults.get('scheduled_at'))
+                data.setdefault('interval_min', defaults.get('interval_min'))
+                data.setdefault('timezone', defaults.get('timezone', 'UTC'))
+                data.setdefault('recurrence', defaults.get('recurrence'))
             except Exception:
                 # Fallback: allow ad-hoc run if script_path is provided
                 if not data.get('script_path'):
                     return Response({'error': 'Invalid panel_id'}, status=status.HTTP_400_BAD_REQUEST)
+        user = self._resolve_user(request, data.get('user'), panel)
+        if user is None:
+            return Response({'error': 'Authentication required to create a run'}, status=status.HTTP_400_BAD_REQUEST)
+        priority = self._normalize_priority(data.get('priority')) or 3
+        schedule_type = normalize_schedule_type(data.get('schedule_type'))
+        script_path = data.get('script_path')
+        if not script_path:
+            return Response({'error': 'script_path is required'}, status=status.HTTP_400_BAD_REQUEST)
+        arguments = data.get('arguments')
+        if not isinstance(arguments, dict):
+            arguments = data.get('param_values') if isinstance(data.get('param_values'), dict) else {}
+        name = data.get('name') or ""
+        timezone_name = normalize_timezone_name(data.get('timezone'))
 
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        instance = serializer.instance
+        try:
+            raw_recurrence = data.get('recurrence')
+            if not raw_recurrence and data.get('interval_min'):
+                raw_recurrence = {
+                    'kind': 'interval',
+                    'interval_min': data.get('interval_min'),
+                    'start_immediately': True,
+                }
+            response, instance = schedule_run(
+                user=user,
+                script_path=script_path,
+                arguments=arguments,
+                name=name,
+                priority=priority,
+                schedule_type=schedule_type,
+                timezone_name=timezone_name,
+                scheduled_at=data.get('scheduled_at'),
+                recurrence=raw_recurrence,
+                panel=panel,
+            )
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if panel is not None:
             param_values = request.data.get('param_values')
             if isinstance(param_values, dict):
                 panel.param_values = param_values
                 panel.save(update_fields=['param_values', 'updated_at'])
-        return Response({'status': instance.status, 'rid': instance.id}, status=status.HTTP_200_OK)
+        return Response(response, status=status.HTTP_200_OK)
 
     def perform_create(self, serializer):
         instance = serializer.save()
-        
-        # If created as QUEUED, try to run immediately (or let Scheduler pick it up)
-        # For this prototype, we trigger the task immediately if it's "NOW"
         if instance.status == 'QUEUED' and instance.schedule_type == 'NOW':
-            print(f"Auto-starting run {instance.id}")
             try:
-                run_experiment_task.delay(instance.id)
-            except Exception as e:
-                # Don't fail the API call if the worker/broker isn't available.
-                print(f"Failed to dispatch run {instance.id}: {e}")
+                task = run_experiment_task.delay(instance.id)
+                instance.dispatch_task_id = task.id
+                instance.save(update_fields=['dispatch_task_id'])
+            except Exception:
+                pass
+
+    def _resolve_user(self, request, user_id, panel):
+        if request.user and request.user.is_authenticated:
+            return request.user
+        if panel is not None and panel.author is not None:
+            return panel.author
+        try:
+            if user_id is not None:
+                return User.objects.get(id=int(user_id))
+        except Exception:
+            return None
+        return None
 
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
@@ -289,15 +248,17 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def abort(self, request, pk=None):
-        # Simple status-based abort; worker cancellation is a TODO.
         experiment_run = self.get_object()
+        if experiment_run.schedule_id:
+            cancel_schedule(experiment_run.schedule)
         if experiment_run.status not in ['QUEUED', 'RUNNING']:
-             return Response({'status': f'Experiment is in {experiment_run.status} state, cannot abort'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response({'status': f'Experiment is in {experiment_run.status} state, cannot abort'}, status=status.HTTP_400_BAD_REQUEST)
+        if experiment_run.dispatch_task_id:
+            from .scheduling import revoke_task
+            revoke_task(experiment_run.dispatch_task_id)
         experiment_run.status = 'ABORTED'
-        experiment_run.save()
-        # TODO: Signal the backend worker/celery task to kill the process
-        
+        experiment_run.completed_at = timezone.now()
+        experiment_run.save(update_fields=['status', 'completed_at'])
         return Response({'status': 'Experiment aborted'})
 
     @action(detail=True, methods=['get'])
@@ -340,7 +301,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         # Try to inspect HDF5 file for dtype/shape
         try:
             if dataset.file_path and os.path.exists(dataset.file_path):
-                with _open_h5_read(dataset.file_path) as f:
+                with open_h5_read(dataset.file_path) as f:
                     if 'data' in f:
                         d = f['data']
                         info['dtype'] = str(d.dtype)
@@ -366,54 +327,62 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            with _open_h5_read(dataset.file_path) as f:
-                if 'data' not in f:
-                    return Response({'error': 'Data not present in file'}, status=status.HTTP_404_NOT_FOUND)
-                arr = np.array(f['data'])
-                params_arr = np.array(f['params']) if 'params' in f else None
-                combined_meta = dict(dataset.metadata or {})
-                for key in ('param_axes', 'data_axes', 'num_data'):
-                    if key in f.attrs:
-                        val = f.attrs.get(key)
-                        if isinstance(val, np.ndarray):
-                            val = val.tolist()
-                        combined_meta[key] = val
+            table, _combined_meta = _load_dataset_table(dataset, slice_expr=slice_expr)
 
-                # Basic slice parser: dims separated by comma, each is start:stop or ':'
-                if slice_expr:
-                    slices = []
-                    for part in slice_expr.split(','):
-                        part = part.strip()
-                        if part == ':' or part == '':
-                            slices.append(slice(None))
-                        else:
-                            if ':' in part:
-                                s,e = part.split(':')
-                                start = int(s) if s != '' else None
-                                stop = int(e) if e != '' else None
-                                slices.append(slice(start, stop))
-                            else:
-                                idx = int(part)
-                                slices.append(idx)
-                    arr = arr[tuple(slices)]
-
-                if fmt == 'json':
-                    table = _dataset_to_point_rows(arr, params_arr, combined_meta)
-                    return Response({
-                        'rid': experiment_run.id,
-                        'dataset_id': f"ds_{dataset.id}",
-                        'name': dataset.name,
-                        'columns': table['columns'],
-                        'data': table['data'],
-                    })
-                elif fmt == 'npy':
-                    # Return numpy binary as base64? For now, return error (not implemented)
-                    return Response({'error': 'npy format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
-                elif fmt == 'hdf5':
-                    return Response({'error': 'hdf5 format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+            if fmt == 'json':
+                return Response({
+                    'rid': experiment_run.id,
+                    'dataset_id': f"ds_{dataset.id}",
+                    'name': dataset.name,
+                    'columns': table['columns'],
+                    'data': table['data'],
+                })
+            elif fmt == 'npy':
+                return Response({'error': 'npy format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+            elif fmt == 'hdf5':
+                return Response({'error': 'hdf5 format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
         except OSError as e:
-            if _is_transient_h5_open_error(e):
+            if is_transient_h5_open_error(e):
+                return Response(
+                    {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path=r'datasets/(?P<dataset_name>[^/]+)/query')
+    def dataset_query(self, request, pk=None, dataset_name=None):
+        experiment_run = self.get_object()
+        try:
+            dataset = experiment_run.datasets.get(name=dataset_name)
+        except Dataset.DoesNotExist:
+            return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not dataset.file_path or not os.path.exists(dataset.file_path):
+            return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        query_text = str(request.data.get('query') or '').strip()
+        if not query_text:
+            return Response({'error': 'query required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        slice_expr = request.data.get('slice')
+        try:
+            table, _combined_meta = _load_dataset_table(dataset, slice_expr=slice_expr)
+            result = execute_query(table.get('columns', []), table.get('data', []), query_text)
+            return Response({
+                'rid': experiment_run.id,
+                'dataset_id': f"ds_{dataset.id}",
+                'name': dataset.name,
+                'columns': result['columns'],
+                'data': result['data'],
+                'query': result['query'],
+            })
+        except DatasetQueryError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except OSError as e:
+            if is_transient_h5_open_error(e):
                 return Response(
                     {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -438,7 +407,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                 if not ds.file_path:
                     continue
                 try:
-                    with _open_h5_read(ds.file_path) as f:
+                    with open_h5_read(ds.file_path) as f:
                         if 'data' not in f:
                             continue
                         arr = f['data'][:]
@@ -586,26 +555,64 @@ class ArchiveViewSet(viewsets.ModelViewSet):
         if not dataset.file_path or not os.path.exists(dataset.file_path):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
         try:
-            with _open_h5_read(dataset.file_path) as f:
-                if 'data' not in f:
-                    return Response({'error': 'Data not present in file'}, status=status.HTTP_404_NOT_FOUND)
-                arr = np.array(f['data'])
-                params_arr = np.array(f['params']) if 'params' in f else None
-                combined_meta = dict(dataset.metadata or {})
-                for key in ('param_axes', 'data_axes', 'num_data'):
-                    if key in f.attrs:
-                        val = f.attrs.get(key)
-                        if isinstance(val, np.ndarray):
-                            val = val.tolist()
-                        combined_meta[key] = val
-                table = _dataset_to_point_rows(arr, params_arr, combined_meta)
-                return Response({
-                    'archive_id': a.id,
-                    'dataset_id': f"ds_{dataset.id}",
-                    'name': dataset.name,
-                    'columns': table['columns'],
-                    'data': table['data'],
-                })
+            table, _combined_meta = _load_dataset_table(dataset)
+            return Response({
+                'archive_id': a.id,
+                'dataset_id': f"ds_{dataset.id}",
+                'name': dataset.name,
+                'columns': table['columns'],
+                'data': table['data'],
+            })
+        except OSError as e:
+            if is_transient_h5_open_error(e):
+                return Response(
+                    {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['post'], url_path=r'datasets/(?P<dataset_name>[^/]+)/query')
+    def dataset_query(self, request, pk=None, dataset_name=None):
+        try:
+            a = Archive.objects.get(id=pk)
+        except Archive.DoesNotExist:
+            return Response({'error': 'archive not found'}, status=status.HTTP_404_NOT_FOUND)
+        run = a.experiment_run
+        try:
+            dataset = run.datasets.get(name=dataset_name)
+        except Dataset.DoesNotExist:
+            return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
+        if not dataset.file_path or not os.path.exists(dataset.file_path):
+            return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        query_text = str(request.data.get('query') or '').strip()
+        if not query_text:
+            return Response({'error': 'query required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        slice_expr = request.data.get('slice')
+        try:
+            table, _combined_meta = _load_dataset_table(dataset, slice_expr=slice_expr)
+            result = execute_query(table.get('columns', []), table.get('data', []), query_text)
+            return Response({
+                'archive_id': a.id,
+                'rid': run.id,
+                'dataset_id': f"ds_{dataset.id}",
+                'name': dataset.name,
+                'columns': result['columns'],
+                'data': result['data'],
+                'query': result['query'],
+            })
+        except DatasetQueryError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except OSError as e:
+            if is_transient_h5_open_error(e):
+                return Response(
+                    {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

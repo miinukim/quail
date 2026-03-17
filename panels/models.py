@@ -15,7 +15,9 @@ def default_schedule_defaults():
         'priority': 3,
         'schedule_type': 'NOW',
         'scheduled_at': None,
-        'interval_min': None
+        'interval_min': None,
+        'timezone': 'UTC',
+        'recurrence': None,
     }
 
 def generate_config_id():

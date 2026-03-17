@@ -6,15 +6,31 @@ import json
 import asyncio
 import random
 import datetime
+import h5py
+import numpy as np
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from core.ttl_state import TTL_DEVICES, TTL_STATE
-from expmanager.models import ExperimentRun
+from expmanager.models import Dataset, ExperimentRun
+from expmanager.dataset_payloads import dataset_to_point_rows, open_h5_read
 from expmanager.serializers import ExperimentRunListSerializer
 
 
 def _now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _dataset_stream_message(dataset: Dataset, payload: dict, message_type: str):
+    return {
+        "type": message_type,
+        "rid": dataset.experiment_run_id,
+        "dataset_id": str(dataset.id),
+        "name": dataset.name,
+        "columns": payload.get("columns", []),
+        "data": payload.get("data", []),
+        "rows": payload.get("rows", []),
+        "updated_at": _now_iso(),
+    }
 
 @database_sync_to_async
 def _fetch_runs(filters):
@@ -179,30 +195,111 @@ class RunLogConsumer(AsyncWebsocketConsumer):
 class DatasetStreamConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
-        self.dataset_id = self.scope["url_route"]["kwargs"]["dataset_id"]
-        # Synthetic dataset streaming has been disabled.
+        self.dataset_ref = self.scope["url_route"]["kwargs"]["dataset_id"]
+        self.group_name = f"run_{self.run_id}"
+        self.dataset = await _resolve_dataset(self.run_id, self.dataset_ref)
         await self.accept()
-        await self.send(
-            text_data=json.dumps(
-                {
-                    "type": "error",
-                    "rid": self.run_id,
-                    "dataset_id": self.dataset_id,
-                    "message": "Dataset streaming disabled (no synthetic data).",
-                    "updated_at": _now_iso(),
-                }
+        if self.dataset is None:
+            await self.send(
+                text_data=json.dumps(
+                    {
+                        "type": "error",
+                        "rid": self.run_id,
+                        "dataset_id": self.dataset_ref,
+                        "message": "Dataset not found.",
+                        "updated_at": _now_iso(),
+                    }
+                )
             )
-        )
-        await self.close()
+            await self.close()
+            return
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        snapshot = await _load_dataset_table(self.dataset.id)
+        if snapshot is None:
+            await self.send(
+                text_data=json.dumps(
+                    {
+                        "type": "error",
+                        "rid": self.run_id,
+                        "dataset_id": str(self.dataset.id),
+                        "name": self.dataset.name,
+                        "message": "Dataset could not be loaded.",
+                        "updated_at": _now_iso(),
+                    }
+                )
+            )
+            await self.close()
+            return
+        await self.send(text_data=json.dumps(_dataset_stream_message(self.dataset, snapshot, "snapshot")))
 
     async def disconnect(self, close_code):
-        return
+        dataset = getattr(self, "dataset", None)
+        if dataset is not None:
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     async def receive(self, text_data=None, bytes_data=None):
         return
 
-    async def _loop(self):
-        return
+    async def new_data(self, event):
+        dataset = getattr(self, "dataset", None)
+        if dataset is None:
+            return
+        event_dataset_id = str(event.get("dataset_id", ""))
+        if event_dataset_id and event_dataset_id != str(dataset.id):
+            return
+        dataset_name = event.get("dataset_name")
+        if dataset_name and dataset_name != dataset.name:
+            return
+        rows = event.get("rows")
+        columns = event.get("columns")
+        if not isinstance(rows, list) or not isinstance(columns, list):
+            return
+        await self.send(
+            text_data=json.dumps(
+                _dataset_stream_message(
+                    dataset,
+                    {"columns": columns, "rows": rows},
+                    "append",
+                )
+            )
+        )
+
+
+@database_sync_to_async
+def _resolve_dataset(run_id: int, dataset_ref: str):
+    qs = Dataset.objects.filter(experiment_run_id=run_id)
+    try:
+        dataset_id = int(dataset_ref)
+    except Exception:
+        dataset_id = None
+    if dataset_id is not None:
+        ds = qs.filter(id=dataset_id).order_by("-created_at").first()
+        if ds is not None:
+            return ds
+    return qs.filter(name=dataset_ref).order_by("-created_at").first()
+
+
+@database_sync_to_async
+def _load_dataset_table(dataset_id: int):
+    dataset = Dataset.objects.select_related("experiment_run").filter(id=dataset_id).first()
+    if dataset is None:
+        return None
+    try:
+        with open_h5_read(dataset.file_path) as f:
+            data_arr = np.array(f["data"]) if "data" in f else np.array([])
+            params_arr = np.array(f["params"]) if "params" in f else None
+            file_meta = {}
+            for key in f.attrs.keys():
+                value = f.attrs.get(key)
+                if isinstance(value, np.ndarray):
+                    file_meta[key] = value.tolist()
+                else:
+                    file_meta[key] = value
+            combined_meta = dict(dataset.metadata or {})
+            combined_meta.update(file_meta)
+            return dataset_to_point_rows(data_arr, params_arr, combined_meta)
+    except (OSError, KeyError, ValueError, h5py.H5Error):
+        return None
 
 
 class TTLStatusConsumer(AsyncWebsocketConsumer):

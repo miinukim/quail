@@ -8,6 +8,7 @@ import os
 import logging
 from pathlib import Path
 from expmanager.models import RunLog, Dataset
+from expmanager.dataset_payloads import save_event_to_point_rows
 from .instrument_client import InstrumentClient
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
@@ -188,13 +189,15 @@ class ExperimentEngine:
             raise e
 
         # Send to WebSocket for real-time plotting
+        payload = save_event_to_point_rows(params, data, self.current_dataset.metadata or {})
         async_to_sync(self.channel_layer.group_send)(
             self.group_name,
             {
                 'type': 'new_data',
-                'dataset_id': self.current_dataset.id,
-                'params': params,
-                'data': [list(d) for d in data]
+                'dataset_id': str(self.current_dataset.id),
+                'dataset_name': self.current_dataset.name,
+                'columns': payload.get('columns', []),
+                'rows': payload.get('data', []),
             }
         )
 
