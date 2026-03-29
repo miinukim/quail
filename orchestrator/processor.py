@@ -271,7 +271,12 @@ class VirtualProcessor:
             return value
         
         if stype == 'PARAM':
-            val = self.evaluate(stmt['value'])
+            run_arguments = self.context.get('run_arguments') or {}
+            if stmt['name'] in run_arguments:
+                val = run_arguments[stmt['name']]
+                self.logger.info("Using runtime override for param %s = %s", stmt['name'], val)
+            else:
+                val = self.evaluate(stmt['value'])
             val = coerce_param_value(stmt.get('dtype'), val, stmt.get('name'))
             self.vars[stmt['name']] = val
             self.logger.info(f"Defined param {stmt['name']} = {val}")

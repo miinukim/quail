@@ -239,6 +239,7 @@ class ExperimentEngine:
             'sleep': time.sleep,
             'instruments': self.client,
             'fpga_code': fpga_code,
+            'run_arguments': self.experiment_run.arguments or {},
             'save_data': self.save_data,
             'init_data': self.init_data,
             'check_abort': self.check_abort

@@ -5,6 +5,7 @@ Panels represent reusable experiment UI configurations; PanelConfig stores snaps
 import uuid
 from django.db import models
 from django.contrib.auth.models import User
+from django.conf import settings
 
 
 def generate_panel_id():
@@ -16,7 +17,7 @@ def default_schedule_defaults():
         'schedule_type': 'NOW',
         'scheduled_at': None,
         'interval_min': None,
-        'timezone': 'UTC',
+        'timezone': getattr(settings, 'TIME_ZONE', 'UTC') or 'UTC',
         'recurrence': None,
     }
 

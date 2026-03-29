@@ -29,7 +29,7 @@ def panel_default_schedule():
         'schedule_type': 'NOW',
         'scheduled_at': None,
         'interval_min': None,
-        'timezone': 'UTC',
+        'timezone': getattr(settings, 'TIME_ZONE', 'UTC') or 'UTC',
         'recurrence': None,
     }
 
@@ -80,8 +80,6 @@ def build_panel_fields(parameters_schema):
         fields.append({
             'key': key,
             'control': control,
-            'default': schema.get('default'),
-            'unit': schema.get('unit'),
         })
     return fields
 
