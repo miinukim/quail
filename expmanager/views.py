@@ -2,6 +2,13 @@
 REST API endpoints for scripts, runs, logs, datasets, and file browsing.
 This is the main entry point for the frontend to manage experiment lifecycle.
 """
+import os
+import datetime
+import time
+import random
+import csv
+
+from django.http import HttpResponse
 from rest_framework import viewsets, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
@@ -21,9 +28,6 @@ from .dataset_payloads import dataset_to_point_rows, is_transient_h5_open_error,
 from .dataset_query import DatasetQueryError, execute_query
 import h5py
 import numpy as np
-import random
-import datetime
-import time
 
 
 def _load_dataset_table(dataset, slice_expr=None):
@@ -58,6 +62,34 @@ def _load_dataset_table(dataset, slice_expr=None):
 
         table = dataset_to_point_rows(arr, params_arr, combined_meta)
         return table, combined_meta
+
+
+def _dataset_table_to_csv_response(table, filename):
+    response = HttpResponse(content_type='text/csv')
+    response['Content-Disposition'] = f'attachment; filename="{filename}"'
+
+    writer = csv.writer(response)
+    columns = table.get('columns', []) or []
+    data = table.get('data', []) or []
+
+    if columns:
+        writer.writerow(columns)
+
+    for row in data:
+        if isinstance(row, dict):
+            if columns:
+                writer.writerow([row.get(col) for col in columns])
+            else:
+                if not columns:
+                    columns = list(row.keys())
+                    writer.writerow(columns)
+                writer.writerow([row.get(col) for col in columns])
+        elif isinstance(row, (list, tuple)):
+            writer.writerow(list(row))
+        else:
+            writer.writerow([row])
+
+    return response
 
 
 
@@ -391,6 +423,33 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    @action(detail=True, methods=['get'], url_path=r'datasets/(?P<dataset_name>[^/]+)/download')
+    def dataset_download(self, request, pk=None, dataset_name=None):
+        experiment_run = self.get_object()
+        try:
+            dataset = experiment_run.datasets.get(name=dataset_name)
+        except Dataset.DoesNotExist:
+            return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not dataset.file_path or not os.path.exists(dataset.file_path):
+            return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            table, _combined_meta = _load_dataset_table(dataset)
+            safe_name = dataset.name.replace('/', '_')
+            filename = f"run_{experiment_run.id}_{safe_name}.csv"
+            return _dataset_table_to_csv_response(table, filename)
+        except OSError as e:
+            if is_transient_h5_open_error(e):
+                return Response(
+                    {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
     @action(detail=True, methods=['get'], url_path='get_data')
     def get_data(self, request, pk=None):
         """Aggregate dataset rows into a simple points list for realtime views.
@@ -431,6 +490,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 class DatasetViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     queryset = Dataset.objects.all()
@@ -441,9 +501,7 @@ class DatasetViewSet(viewsets.ReadOnlyModelViewSet):
         # Implementation to stream file content
         return Response({"status": "Not implemented yet"})
 
-import os
 from django.conf import settings
-import datetime
 
 class RunLogViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -606,6 +664,36 @@ class ArchiveViewSet(viewsets.ModelViewSet):
             })
         except DatasetQueryError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except OSError as e:
+            if is_transient_h5_open_error(e):
+                return Response(
+                    {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'], url_path=r'datasets/(?P<dataset_name>[^/]+)/download')
+    def dataset_download(self, request, pk=None, dataset_name=None):
+        try:
+            a = Archive.objects.get(id=pk)
+        except Archive.DoesNotExist:
+            return Response({'error': 'archive not found'}, status=status.HTTP_404_NOT_FOUND)
+        run = a.experiment_run
+        try:
+            dataset = run.datasets.get(name=dataset_name)
+        except Dataset.DoesNotExist:
+            return Response({'error': 'Dataset not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not dataset.file_path or not os.path.exists(dataset.file_path):
+            return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            table, _combined_meta = _load_dataset_table(dataset)
+            safe_name = dataset.name.replace('/', '_')
+            filename = f"archive_{a.id}_{safe_name}.csv"
+            return _dataset_table_to_csv_response(table, filename)
         except OSError as e:
             if is_transient_h5_open_error(e):
                 return Response(
