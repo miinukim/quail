@@ -9,3 +9,5 @@ numpy
 h5py
 requests
 pyzmq
+
+whitenoise>=6.8

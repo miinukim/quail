@@ -48,6 +48,7 @@ dependencies = [
     "numpy",
     "h5py",
     "requests",
+    "whitenoise>=6.8",
 ]
 
 [project.optional-dependencies]

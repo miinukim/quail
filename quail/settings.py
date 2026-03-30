@@ -14,6 +14,34 @@ from pathlib import Path
 import os
 import json
 
+
+def _env_bool(name, default=False):
+    # Accept the usual deployment-style truthy values from env files.
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name, default=None):
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default or [])
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _env_csv_or_default(name, default=None):
+    values = _env_list(name, default)
+    return values if values else list(default or [])
+
+
+try:
+    import whitenoise  # type: ignore  # noqa: F401
+    HAS_WHITENOISE = True
+except Exception:
+    # Keep local environments working even before WhiteNoise is installed.
+    HAS_WHITENOISE = False
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -50,12 +78,12 @@ for _d in (USER_SCRIPTS_DIR, USER_FPGA_DIR, LOGS_DIR, DATA_DIR):
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-0%n1&(&k%^=qv@tt8+r!j&tpogm)zs%s*$bjswn4yu8l&g9o=w'
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", 'django-insecure-0%n1&(&k%^=qv@tt8+r!j&tpogm)zs%s*$bjswn4yu8l&g9o=w')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = _env_bool("DJANGO_DEBUG", False)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = _env_csv_or_default("DJANGO_ALLOWED_HOSTS", ["127.0.0.1", "localhost"])
 
 
 # Application definition
@@ -133,7 +161,7 @@ CELERY_RESULT_BACKEND = 'django-db'
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = 'UTC'
+CELERY_TIMEZONE = os.environ.get("DJANGO_TIME_ZONE", "Asia/Seoul")
 
 
 # Database
@@ -173,7 +201,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = os.environ.get("DJANGO_TIME_ZONE", "Asia/Seoul")
 
 USE_I18N = True
 
@@ -183,7 +211,8 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -284,15 +313,28 @@ LOGGING = {
     },
 }
 
-# CORS Settings (for React frontend)
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173"
-]
+# CORS / CSRF Settings
+CORS_ALLOWED_ORIGINS = _env_csv_or_default(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+)
+CSRF_TRUSTED_ORIGINS = _env_list("DJANGO_CSRF_TRUSTED_ORIGINS", [])
+CORS_ALLOW_CREDENTIALS = _env_bool("DJANGO_CORS_ALLOW_CREDENTIALS", True)
 
-CORS_ALLOW_CREDENTIALS = True
+if HAS_WHITENOISE:
+    # Serve collected assets directly when deployed behind ASGI/WSGI.
+    MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SESSION_COOKIE_SECURE = _env_bool("DJANGO_SESSION_COOKIE_SECURE", not DEBUG)
+CSRF_COOKIE_SECURE = _env_bool("DJANGO_CSRF_COOKIE_SECURE", not DEBUG)
+SECURE_SSL_REDIRECT = _env_bool("DJANGO_SECURE_SSL_REDIRECT", False)
 
 # REST Framework Settings
 REST_FRAMEWORK = {
