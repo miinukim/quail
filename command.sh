@@ -8,6 +8,8 @@
 #   ./command.sh migrate
 #   ./command.sh superuser
 #   ./command.sh start
+#   ./command.sh start-mock
+#   ./command.sh mock-instrumentserver
 #   ./command.sh stop
 #   ./command.sh status
 #   ./command.sh clean-logs
@@ -26,9 +28,23 @@
 set -euo pipefail
 shopt -s nullglob
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -d "$SCRIPT_DIR/quail" && -d "$SCRIPT_DIR/instrumentserver" ]]; then
+  PROJECT_ROOT="$SCRIPT_DIR"
+elif [[ -d "$SCRIPT_DIR/../quail" && -d "$SCRIPT_DIR/../instrumentserver" ]]; then
+  PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+  PROJECT_ROOT="$SCRIPT_DIR"
+fi
+
 BACKEND_DIR="$PROJECT_ROOT/quail"
-FRONTEND_DIR="$PROJECT_ROOT/maqpie"
+if [[ -d "$PROJECT_ROOT/maqpie" ]]; then
+  FRONTEND_DIR="$PROJECT_ROOT/maqpie"
+else
+  FRONTEND_DIR="$PROJECT_ROOT/iquip-web"
+fi
+INSTRUMENTSERVER_DIR="$PROJECT_ROOT/instrumentserver"
+MOCK_INSTRUMENTSERVER_SCRIPT="$BACKEND_DIR/mock_instrumentserver.py"
 PID_DIR="$PROJECT_ROOT/.pids"
 LOG_DIR="$PROJECT_ROOT/.logs"
 
@@ -39,7 +55,7 @@ VITE_API_BASE="${VITE_API_BASE:-http://localhost:8000/api}"
 DJANGO_HOST="${DJANGO_HOST:-0.0.0.0}"
 DJANGO_PORT="${DJANGO_PORT:-8000}"
 INSTRUMENTSERVER_PORT="${INSTRUMENTSERVER_PORT:-5555}"
-INSTRUMENTSERVER_CONFIG="${INSTRUMENTSERVER_CONFIG:-$PROJECT_ROOT/instrumentserver/instrumentserver/config/serverConfig.yml}"
+INSTRUMENTSERVER_CONFIG="${INSTRUMENTSERVER_CONFIG:-$INSTRUMENTSERVER_DIR/instrumentserver/config/serverConfig.yml}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
@@ -376,6 +392,7 @@ start_backend() {
 
 start_instrumentserver() {
   ensure_conda_env
+  require_dir "$INSTRUMENTSERVER_DIR"
   [[ -f "$INSTRUMENTSERVER_CONFIG" ]] || die "instrumentserver config not found: $INSTRUMENTSERVER_CONFIG"
   local listeners=""
   listeners="$(port_listener_pids "${INSTRUMENTSERVER_PORT:-5555}")"
@@ -384,8 +401,23 @@ start_instrumentserver() {
     return 0
   fi
   print "starting instrumentserver on ${INSTRUMENTSERVER_PORT:-5555} with config ${INSTRUMENTSERVER_CONFIG}"
-  start_bg instrumentserver "$PROJECT_ROOT" \
+  start_bg instrumentserver "$INSTRUMENTSERVER_DIR" \
     "conda run -n '$CONDA_ENV' instrumentserver -p '${INSTRUMENTSERVER_PORT:-5555}' -c '${INSTRUMENTSERVER_CONFIG}'"
+}
+
+start_mock_instrumentserver() {
+  require_dir "$BACKEND_DIR"
+  ensure_conda_env
+  [[ -f "$MOCK_INSTRUMENTSERVER_SCRIPT" ]] || die "mock instrumentserver script not found: $MOCK_INSTRUMENTSERVER_SCRIPT"
+  local listeners=""
+  listeners="$(port_listener_pids "${INSTRUMENTSERVER_PORT:-5555}")"
+  if [[ -n "${listeners// }" ]]; then
+    print "mock instrumentserver: port ${INSTRUMENTSERVER_PORT:-5555} already in use (pid: ${listeners}); skipping launch"
+    return 0
+  fi
+  print "starting mock instrumentserver on ${INSTRUMENTSERVER_PORT:-5555}"
+  start_bg instrumentserver "$BACKEND_DIR" \
+    "conda run -n '$CONDA_ENV' python '$MOCK_INSTRUMENTSERVER_SCRIPT' --port '${INSTRUMENTSERVER_PORT:-5555}'"
 }
 
 start_celery() {
@@ -421,6 +453,15 @@ start_all() {
   start_frontend
 
   print "services started; logs in $LOG_DIR, pids in $PID_DIR"
+}
+
+start_all_mock() {
+  start_backend
+  start_mock_instrumentserver
+  start_celery
+  start_frontend
+
+  print "services started with mock instrumentserver; logs in $LOG_DIR, pids in $PID_DIR"
 }
 
 stop_all() {
@@ -468,11 +509,13 @@ clean_logs() {
 
 usage() {
   cat <<USAGE
-Usage: ./command.sh [setup|migrate|superuser|start|stop|status|clean-logs]
+Usage: ./command.sh [setup|migrate|superuser|start|start-mock|mock-instrumentserver|stop|status|clean-logs]
   setup        create conda env, install deps, and initialize DB/superuser
   migrate      run Django migrations
   superuser    ensure default Django superuser exists
-  start        launch Django + frontend
+  start        launch Django + instrumentserver + Celery + frontend
+  start-mock   launch Django + frontend + mock instrumentserver
+  mock-instrumentserver  launch only the mock instrumentserver
   stop         stop tracked processes
   status       show tracked process state
   clean-logs   truncate runtime logs in .logs and quail/logs
@@ -500,6 +543,8 @@ case "$cmd" in
   migrate) migrate ;;
   superuser) superuser ;;
   start) start_all ;;
+  start-mock) start_all_mock ;;
+  mock-instrumentserver) start_mock_instrumentserver ;;
   stop) stop_all ;;
   status) status_all ;;
   clean-logs) clean_logs ;;
