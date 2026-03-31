@@ -11,6 +11,7 @@ import numpy as np
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from core.ttl_state import TTL_DEVICES, TTL_STATE
+from expmanager.dataset_query import DatasetQueryError, execute_query
 from expmanager.models import Dataset, ExperimentRun
 from expmanager.dataset_payloads import dataset_to_point_rows, open_h5_read
 from expmanager.serializers import ExperimentRunListSerializer
@@ -197,6 +198,7 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
         self.dataset_ref = self.scope["url_route"]["kwargs"]["dataset_id"]
         self.group_name = f"run_{self.run_id}"
+        self.query_text = None
         self.dataset = await _resolve_dataset(self.run_id, self.dataset_ref)
         await self.accept()
         if self.dataset is None:
@@ -230,7 +232,7 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
             )
             await self.close()
             return
-        await self.send(text_data=json.dumps(_dataset_stream_message(self.dataset, snapshot, "snapshot")))
+        await self._send_current_snapshot()
 
     async def disconnect(self, close_code):
         dataset = getattr(self, "dataset", None)
@@ -238,7 +240,65 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     async def receive(self, text_data=None, bytes_data=None):
-        return
+        try:
+            data = json.loads(text_data or "{}")
+        except Exception:
+            return
+
+        if data.get("op") == "refresh":
+            await self._send_current_snapshot()
+            return
+
+        if data.get("op") == "reset_query":
+            self.query_text = None
+            await self._send_current_snapshot()
+            return
+
+        query_text = str(data.get("query") or "").strip()
+        if query_text:
+            self.query_text = query_text
+            await self._send_current_snapshot()
+
+    async def _send_current_snapshot(self):
+        dataset = getattr(self, "dataset", None)
+        if dataset is None:
+            return
+        if self.query_text:
+            try:
+                payload = await _load_dataset_query_table(dataset.id, self.query_text)
+            except DatasetQueryError as exc:
+                await self.send(
+                    text_data=json.dumps(
+                        {
+                            "type": "error",
+                            "rid": dataset.experiment_run_id,
+                            "dataset_id": str(dataset.id),
+                            "name": dataset.name,
+                            "message": str(exc),
+                            "updated_at": _now_iso(),
+                        }
+                    )
+                )
+                return
+        else:
+            payload = await _load_dataset_table(dataset.id)
+
+        if payload is None:
+            await self.send(
+                text_data=json.dumps(
+                    {
+                        "type": "error",
+                        "rid": dataset.experiment_run_id,
+                        "dataset_id": str(dataset.id),
+                        "name": dataset.name,
+                        "message": "Dataset could not be loaded.",
+                        "updated_at": _now_iso(),
+                    }
+                )
+            )
+            return
+
+        await self.send(text_data=json.dumps(_dataset_stream_message(dataset, payload, "snapshot")))
 
     async def new_data(self, event):
         dataset = getattr(self, "dataset", None)
@@ -253,6 +313,9 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
         rows = event.get("rows")
         columns = event.get("columns")
         if not isinstance(rows, list) or not isinstance(columns, list):
+            return
+        if self.query_text:
+            await self._send_current_snapshot()
             return
         await self.send(
             text_data=json.dumps(
@@ -298,6 +361,36 @@ def _load_dataset_table(dataset_id: int):
             combined_meta = dict(dataset.metadata or {})
             combined_meta.update(file_meta)
             return dataset_to_point_rows(data_arr, params_arr, combined_meta)
+    except (OSError, KeyError, ValueError, h5py.H5Error):
+        return None
+
+
+@database_sync_to_async
+def _load_dataset_query_table(dataset_id: int, query_text: str):
+    dataset = Dataset.objects.select_related("experiment_run").filter(id=dataset_id).first()
+    if dataset is None:
+        return None
+    try:
+        with open_h5_read(dataset.file_path) as f:
+            data_arr = np.array(f["data"]) if "data" in f else np.array([])
+            params_arr = np.array(f["params"]) if "params" in f else None
+            file_meta = {}
+            for key in f.attrs.keys():
+                value = f.attrs.get(key)
+                if isinstance(value, np.ndarray):
+                    file_meta[key] = value.tolist()
+                else:
+                    file_meta[key] = value
+            combined_meta = dict(dataset.metadata or {})
+            combined_meta.update(file_meta)
+            table = dataset_to_point_rows(data_arr, params_arr, combined_meta)
+            result = execute_query(table.get("columns", []), table.get("data", []), query_text)
+            return {
+                "columns": result.get("columns", []),
+                "data": result.get("data", []),
+            }
+    except DatasetQueryError:
+        raise
     except (OSError, KeyError, ValueError, h5py.H5Error):
         return None
 

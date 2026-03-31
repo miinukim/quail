@@ -2,6 +2,7 @@
 # QuAIL + MAQPIE dev stack helper for Linux/macOS:
 # - Django backend (8000)
 # - MAQPIE Vite frontend (default 5173)
+# - Redis broker/channel layer (6379)
 #
 # Usage:
 #   ./command.sh setup
@@ -390,6 +391,20 @@ start_backend() {
     "conda run -n '$CONDA_ENV' python manage.py runserver --noreload ${DJANGO_HOST:-0.0.0.0}:${DJANGO_PORT:-8000}"
 }
 
+start_redis() {
+  cleanup_stale_pidfile redis
+  local listeners=""
+  listeners="$(port_listener_pids "${REDIS_PORT:-6379}")"
+  if [[ -n "${listeners// }" ]]; then
+    print "redis: port ${REDIS_PORT:-6379} already in use (pid: ${listeners}); skipping launch"
+    return 0
+  fi
+  require_cmd redis-server
+  print "starting redis on ${REDIS_PORT:-6379}"
+  start_bg redis "$PROJECT_ROOT" \
+    "redis-server --port '${REDIS_PORT:-6379}' --save '' --appendonly no"
+}
+
 start_instrumentserver() {
   ensure_conda_env
   require_dir "$INSTRUMENTSERVER_DIR"
@@ -447,6 +462,7 @@ start_frontend() {
 }
 
 start_all() {
+  start_redis
   start_backend
   start_instrumentserver
   start_celery
@@ -456,6 +472,7 @@ start_all() {
 }
 
 start_all_mock() {
+  start_redis
   start_backend
   start_mock_instrumentserver
   start_celery
@@ -469,6 +486,7 @@ stop_all() {
   stop_name instrumentserver
   stop_name celery
   stop_name django
+  stop_name redis
   # Celery does not bind a fixed service port, so also clean up any stray
   # QuAIL workers that may have survived older launches or stale pid tracking.
   if command -v pkill >/dev/null 2>&1; then
@@ -489,6 +507,7 @@ status_all() {
   status_name instrumentserver
   status_name celery
   status_name frontend
+  status_name redis
   check_port_service "${INSTRUMENTSERVER_PORT:-5555}" "instrumentserver"
   check_port_service "${REDIS_PORT:-6379}" "redis"
   print "logs: $LOG_DIR"

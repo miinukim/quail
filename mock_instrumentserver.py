@@ -30,6 +30,13 @@ DEFAULT_STATE = {
     "seq1.sample_rate": 250_000_000.0,
     "seq1.readout_freq": 55_000_000.0,
     "seq1.readout_gain": 1.0,
+    "dds.pulse_time_us": 0.0,
+    "dds.detuning_hz": 0.0,
+    "dds.rabi_rate_hz": 42000.0,
+    "dds.drive_scale": 1.0,
+    "trap.rf_level": 0.92,
+    "pmt.background_counts": 4.5,
+    "pmt.threshold_counts": 14.0,
 }
 
 
@@ -172,8 +179,12 @@ class MockInstrumentServer:
         }
 
     def _generate_run_block(self, device_name, program, kwargs):
+        program_text = str(program or "")
+        if "rabi" in program_text.lower():
+            return self._generate_trapped_ion_rabi_block(device_name, program_text, kwargs)
+
         run_index = self.run_counts.get(device_name, 1)
-        npoints = int(kwargs.get("npoints") or self._infer_npoints(program) or 256)
+        npoints = int(kwargs.get("npoints") or self._infer_npoints(program_text) or 256)
         sample_rate = float(self.state.get(f"{device_name}.sample_rate", self.state.get("sequencer.sample_rate", 250_000_000.0)))
         readout_freq = float(self.state.get(f"{device_name}.readout_freq", self.state.get("sequencer.readout_freq", 55_000_000.0)))
         readout_gain = float(self.state.get(f"{device_name}.readout_gain", self.state.get("sequencer.readout_gain", 1.0)))
@@ -216,6 +227,64 @@ class MockInstrumentServer:
 
         return [time_axis, i_row, q_row, mag_row]
 
+    def _generate_trapped_ion_rabi_block(self, device_name, program, kwargs):
+        run_index = self.run_counts.get(device_name, 1)
+        nshots = int(kwargs.get("npoints") or self._infer_npoints(program) or 200)
+        pulse_time_us = float(self.state.get("dds.pulse_time_us", 0.0))
+        detuning_hz = float(self.state.get("dds.detuning_hz", 0.0))
+        rabi_rate_hz = float(self.state.get("dds.rabi_rate_hz", 42000.0))
+        drive_scale = float(self.state.get("dds.drive_scale", 1.0))
+        trap_rf_level = float(self.state.get("trap.rf_level", 0.92))
+        background = float(self.state.get("pmt.background_counts", 4.5))
+        threshold = float(self.state.get("pmt.threshold_counts", 14.0))
+
+        seed = self._stable_seed(device_name, program, run_index, pulse_time_us, detuning_hz)
+        pulse_time_s = max(pulse_time_us, 0.0) * 1e-6
+        omega = 2.0 * math.pi * max(rabi_rate_hz, 1.0) * max(drive_scale, 0.1)
+        detuning_rad = 2.0 * math.pi * detuning_hz
+        generalized = math.sqrt(omega * omega + detuning_rad * detuning_rad)
+        ideal_excited = 0.0
+        if generalized > 0.0:
+            ideal_excited = (omega * omega / (generalized * generalized)) * math.sin(0.5 * generalized * pulse_time_s) ** 2
+
+        coherence = math.exp(-pulse_time_us / 120.0)
+        contrast = 0.08 + 0.86 * coherence * max(0.75, min(1.05, trap_rf_level))
+        excited_prob = 0.03 + contrast * ideal_excited
+        excited_prob = max(0.01, min(0.99, excited_prob))
+
+        shot_axis = []
+        counts_row = []
+        bright_row = []
+        running_prob_row = []
+        bright_total = 0.0
+
+        for shot in range(nshots):
+            shot_axis.append(float(shot))
+            u = self._deterministic_unit(seed, shot, 0)
+            count_noise = self._deterministic_signed(seed, shot, 1)
+            state_jitter = self._deterministic_signed(seed, shot, 2)
+
+            bright_state = 1.0 if u < max(0.0, min(1.0, excited_prob + 0.015 * state_jitter)) else 0.0
+            if bright_state > 0.5:
+                mean_counts = 26.0 + 8.0 * excited_prob + 1.5 * trap_rf_level
+                counts = mean_counts + 4.2 * count_noise + 0.9 * math.sin(shot * 0.11 + pulse_time_us * 0.07)
+            else:
+                mean_counts = background + 1.2 * (1.0 - trap_rf_level) + 0.6 * abs(detuning_hz) / 1e4
+                counts = mean_counts + 1.8 * count_noise + 0.5 * math.cos(shot * 0.17 + pulse_time_us * 0.03)
+
+            counts = max(0.0, counts)
+            classified_bright = 1.0 if counts >= threshold else 0.0
+            bright_total += classified_bright
+            running_prob = bright_total / float(shot + 1)
+
+            counts_row.append(round(counts, 3))
+            bright_row.append(classified_bright)
+            running_prob_row.append(round(running_prob, 6))
+
+        self.state["pmt.last_mean_counts"] = round(sum(counts_row) / max(len(counts_row), 1), 4)
+        self.state["pmt.last_bright_fraction"] = round(running_prob_row[-1] if running_prob_row else 0.0, 6)
+        return [shot_axis, counts_row, bright_row, running_prob_row]
+
     @staticmethod
     def _infer_npoints(program):
         text = str(program or "")
@@ -240,6 +309,16 @@ class MockInstrumentServer:
         payload = "||".join(str(part) for part in parts).encode("utf-8")
         digest = hashlib.sha256(payload).hexdigest()
         return int(digest[:16], 16)
+
+    @staticmethod
+    def _deterministic_unit(seed, index, channel):
+        angle = (seed % 1000003) * 0.000001 + index * 12.9898 + channel * 78.233
+        value = math.sin(angle) * 43758.5453123
+        return value - math.floor(value)
+
+    @classmethod
+    def _deterministic_signed(cls, seed, index, channel):
+        return 2.0 * cls._deterministic_unit(seed, index, channel) - 1.0
 
     def _nested_full_state(self):
         return self._nested_from_mapping(self.state)
