@@ -38,7 +38,7 @@ urlpatterns = [
     path('api/', include(router.urls)),
     path('api/login/', CustomAuthToken.as_view(), name='api_login'),
     path('api/logout/', logout_view, name='api_logout'),
-    path('api/ttl/devices/', ttl_devices),
-    path('api/ttl/level/', ttl_level),
-    path('api/ttl/override/', ttl_override),
+    path('api/devices/ttl/devices/', ttl_devices),
+    path('api/devices/ttl/level/', ttl_level),
+    path('api/devices/ttl/override/', ttl_override),
 ]

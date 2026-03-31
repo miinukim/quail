@@ -19,11 +19,15 @@ class PanelAPITest(TestCase):
         assert resp.status_code == 200
         data = resp.json()
         assert 'panel_id' in data
+        assert 'param_schema' in data
+        assert 'parameters_schema' not in data
+        assert 'fields' not in (data.get('panel') or {})
 
         pid = data['panel_id']
         resp2 = self.client.get(f'/api/panels/{pid}/')
         assert resp2.status_code == 200
         assert resp2.json().get('name') == 'CoolingScan'
+        assert 'fields' not in (resp2.json().get('panel') or {})
 
     def test_list_panels(self):
         Panel.objects.create(name='p1', script_path='a', author=self.user)

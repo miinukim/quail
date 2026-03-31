@@ -93,7 +93,7 @@ def inspect_script(code: str) -> Dict[str, Any]:
     Parse script and infer parameter schema and defaults.
     Returns:
       {
-        "parameters_schema": {name: {type, default, min, max}},
+        "param_schema": {name: {type, default, min, max}},
         "param_values": {name: default},
         "param_axes": [...],
       }
@@ -103,20 +103,20 @@ def inspect_script(code: str) -> Dict[str, Any]:
     ast = parser.program()
 
     vars_map: Dict[str, Any] = {}
-    parameters_schema: Dict[str, Dict[str, Any]] = {}
+    param_schema: Dict[str, Dict[str, Any]] = {}
     param_values: Dict[str, Any] = {}
     param_axes = []
     data_axes = []
     data_axes_effective = []
 
     def apply_param(name: str, value: Any, dtype: Optional[str] = None) -> None:
-        if name in parameters_schema:
+        if name in param_schema:
             return
         schema: Dict[str, Any] = {"type": dtype or _infer_type(value)}
         if value is not UNRESOLVED:
             schema["default"] = value
             param_values[name] = value
-        parameters_schema[name] = schema
+        param_schema[name] = schema
 
     def walk(statements):
         nonlocal param_axes, data_axes, data_axes_effective
@@ -140,14 +140,14 @@ def inspect_script(code: str) -> Dict[str, Any]:
                 start = _safe_eval(stmt.get("start"), vars_map)
                 end = _safe_eval(stmt.get("end"), vars_map)
                 var = stmt.get("var")
-                if var and var not in parameters_schema:
+                if var and var not in param_schema:
                     schema = {"type": "float"}
                     if start is not UNRESOLVED:
                         schema["default"] = start
                         schema["min"] = start
                     if end is not UNRESOLVED:
                         schema["max"] = end
-                    parameters_schema[var] = schema
+                    param_schema[var] = schema
                     if "default" in schema:
                         param_values[var] = schema["default"]
                 walk(stmt.get("body", []))
@@ -163,7 +163,7 @@ def inspect_script(code: str) -> Dict[str, Any]:
     walk(ast)
 
     return {
-        "parameters_schema": parameters_schema,
+        "param_schema": param_schema,
         "param_values": param_values,
         "param_axes": param_axes,
         "data_axes": data_axes,

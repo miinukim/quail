@@ -35,10 +35,8 @@ class Panel(models.Model):
     config_id = models.CharField(max_length=32, null=True, blank=True)
 
     # Schema & values for UI rendering and defaults.
-    parameters_schema = models.JSONField(default=dict, blank=True)
+    param_schema = models.JSONField(default=dict, blank=True)
     param_values = models.JSONField(default=dict, blank=True)
-    panel_fields = models.JSONField(default=dict, blank=True)
-
     # Default scheduling used when creating runs.
     schedule_defaults = models.JSONField(default=default_schedule_defaults)
 

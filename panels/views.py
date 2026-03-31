@@ -60,29 +60,6 @@ def resolve_script_path(path):
             return candidate
     return path
 
-def build_panel_fields(parameters_schema):
-    # Map schema types to simple UI control hints.
-    fields = []
-    if not isinstance(parameters_schema, dict):
-        return fields
-    for key, schema in parameters_schema.items():
-        if not isinstance(schema, dict):
-            continue
-        ftype = schema.get('type')
-        if ftype in ('int', 'integer'):
-            control = 'integer'
-        elif ftype in ('float', 'number'):
-            control = 'number'
-        elif ftype == 'bool':
-            control = 'checkbox'
-        else:
-            control = 'text'
-        fields.append({
-            'key': key,
-            'control': control,
-        })
-    return fields
-
 class PanelViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     queryset = Panel.objects.all()
@@ -112,37 +89,30 @@ class PanelViewSet(viewsets.ModelViewSet):
                     code = f.read()
                 inspection = inspect_script(code)
                 if isinstance(inspection, dict):
-                    schema = inspection.get('parameters_schema') or {}
+                    schema = inspection.get('param_schema') or inspection.get('parameters_schema') or {}
                     param_values = inspection.get('param_values') or {}
                     inspected = True
                     logger.info("Panel inspection (create) path=%s schema=%s param_values=%s", script_path, schema, param_values)
                     if schema:
-                        panel.parameters_schema = schema
+                        panel.param_schema = schema
                     if param_values:
                         panel.param_values = param_values
-                    if panel.parameters_schema:
-                        panel.panel_fields = build_panel_fields(panel.parameters_schema)
                     if schema or param_values:
-                        panel.save(update_fields=['parameters_schema', 'param_values', 'panel_fields', 'updated_at'])
+                        panel.save(update_fields=['param_schema', 'param_values', 'updated_at'])
         except Exception:
             logger.exception("Panel inspection (create) failed for path=%s", panel.script_path)
 
         # Fallback schema only when no script path is available.
-        if not panel.parameters_schema and not inspected and not panel.script_path:
-            panel.parameters_schema = DEFAULT_PANEL_SCHEMA
-            panel.save(update_fields=['parameters_schema', 'updated_at'])
-
-        if not panel.panel_fields and panel.parameters_schema:
-            panel.panel_fields = build_panel_fields(panel.parameters_schema)
-            panel.save(update_fields=['panel_fields', 'updated_at'])
+        if not panel.param_schema and not inspected and not panel.script_path:
+            panel.param_schema = DEFAULT_PANEL_SCHEMA
+            panel.save(update_fields=['param_schema', 'updated_at'])
 
         out = PanelSerializer(panel).data
         out['config_id'] = panel.config_id
         # Provide panel UI defaults as in spec
-        out['parameters_schema'] = panel.parameters_schema or {}
+        out['param_schema'] = panel.param_schema or {}
         out['param_values'] = panel.param_values or {}
         out['panel'] = {
-            'fields': panel.panel_fields or build_panel_fields(panel.parameters_schema),
             'schedule_defaults': panel.schedule_defaults or panel_default_schedule()
         }
 
@@ -168,8 +138,7 @@ class PanelViewSet(viewsets.ModelViewSet):
             tags=cfg.tags or [],
             config_id=cfg.config_id,
             param_values=snapshot.get('param_values', {}),
-            parameters_schema=snapshot.get('parameters_schema', {}),
-            panel_fields=snapshot.get('panel_fields', {}),
+            param_schema=snapshot.get('param_schema', snapshot.get('parameters_schema', {})),
             schedule_defaults=snapshot.get('queue_defaults', panel_default_schedule()),
             author=request.user if request.user.is_authenticated else None,
         )
@@ -177,10 +146,9 @@ class PanelViewSet(viewsets.ModelViewSet):
         out = PanelSerializer(panel).data
         out['config_id'] = cfg.config_id
         out['config_meta'] = {'title': cfg.title, 'updated_at': cfg.updated_at.isoformat().replace('+00:00', 'Z')}
-        out['parameters_schema'] = panel.parameters_schema or {}
+        out['param_schema'] = panel.param_schema or {}
         out['param_values'] = panel.param_values or {}
         out['panel'] = {
-            'fields': panel.panel_fields or build_panel_fields(panel.parameters_schema),
             'schedule_defaults': panel.schedule_defaults or panel_default_schedule()
         }
         return Response(out, status=status.HTTP_200_OK)
@@ -215,24 +183,22 @@ class PanelViewSet(viewsets.ModelViewSet):
         logger.info("Panel retrieve: panel_id=%s script_path=%s", panel.panel_id, panel.script_path)
         # If panel still has the default template schema, attempt re-inspection.
         try:
-            if panel.script_path and (not panel.parameters_schema or panel.parameters_schema == DEFAULT_PANEL_SCHEMA):
+            if panel.script_path and (not panel.param_schema or panel.param_schema == DEFAULT_PANEL_SCHEMA):
                 resolved = resolve_script_path(panel.script_path)
                 if resolved and os.path.exists(resolved):
                     with open(resolved, 'r') as f:
                         code = f.read()
                     inspection = inspect_script(code)
                     if isinstance(inspection, dict):
-                        schema = inspection.get('parameters_schema') or {}
+                        schema = inspection.get('param_schema') or inspection.get('parameters_schema') or {}
                         param_values = inspection.get('param_values') or {}
                         logger.info("Panel inspection (retrieve) path=%s schema=%s param_values=%s", resolved, schema, param_values)
                         if schema:
-                            panel.parameters_schema = schema
+                            panel.param_schema = schema
                         if param_values:
                             panel.param_values = param_values
-                        if panel.parameters_schema:
-                            panel.panel_fields = build_panel_fields(panel.parameters_schema)
                         if schema or param_values:
-                            panel.save(update_fields=['parameters_schema', 'param_values', 'panel_fields', 'updated_at'])
+                            panel.save(update_fields=['param_schema', 'param_values', 'updated_at'])
                 else:
                     logger.info("Panel inspection (retrieve) skipped: path not found=%s", panel.script_path)
         except Exception:
@@ -243,9 +209,9 @@ class PanelViewSet(viewsets.ModelViewSet):
             if cfg:
                 data['config_id'] = cfg.config_id
                 data['config_meta'] = {'title': cfg.title, 'updated_at': cfg.updated_at.isoformat().replace('+00:00', 'Z')}
-        data['parameters_schema'] = panel.parameters_schema or {}
+        data['param_schema'] = panel.param_schema or {}
         data['param_values'] = panel.param_values or {}
-        data['panel'] = {'fields': panel.panel_fields or build_panel_fields(panel.parameters_schema), 'schedule_defaults': panel.schedule_defaults}
+        data['panel'] = {'schedule_defaults': panel.schedule_defaults}
         return Response(data)
 
     @action(detail=True, methods=['post'])
@@ -292,7 +258,7 @@ class PanelViewSet(viewsets.ModelViewSet):
             return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         response['panel_id'] = panel.panel_id
         response['name'] = panel.name
-        response['parameters_schema'] = panel.parameters_schema
+        response['param_schema'] = panel.param_schema
         return Response(response)
 
 
@@ -449,8 +415,7 @@ class PanelConfigViewSet(viewsets.ViewSet):
             'script_path': panel.script_path,
             'class_name': panel.class_name,
             'param_values': panel.param_values or {},
-            'parameters_schema': panel.parameters_schema or {},
-            'panel_fields': panel.panel_fields or build_panel_fields(panel.parameters_schema),
+            'param_schema': panel.param_schema or {},
             'queue_defaults': panel.schedule_defaults or panel_default_schedule(),
         }
         cfg = PanelConfig.objects.create(
