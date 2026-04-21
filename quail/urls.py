@@ -21,6 +21,7 @@ from expmanager.views import ExperimentScriptViewSet, ExperimentRunViewSet, RunL
 from panels.views import PanelViewSet, PanelConfigViewSet
 from core.auth_views import CustomAuthToken, logout_view
 from core.ttl_views import ttl_devices, ttl_level, ttl_override
+from workspaces.views import WorkspaceViewSet
 
 # REST API Router
 router = DefaultRouter()
@@ -32,6 +33,7 @@ router.register(r'datasets', DatasetViewSet, basename='dataset')
 router.register(r'archives', ArchiveViewSet, basename='archive')
 router.register(r'panels', PanelViewSet, basename='panel')
 router.register(r'panel-configs', PanelConfigViewSet, basename='panel-config')
+router.register(r'workspaces', WorkspaceViewSet, basename='workspace')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

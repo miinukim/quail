@@ -109,6 +109,7 @@ INSTALLED_APPS = [
     'datahandler',
     'rest_framework.authtoken',
     'panels',
+    'workspaces',
 ]
 
 MIDDLEWARE = [
