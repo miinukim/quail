@@ -53,6 +53,10 @@ class VirtualProcessor:
         return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
 
     @staticmethod
+    def _drop_empty_rows(rows):
+        return [row for row in rows if len(row) > 0]
+
+    @staticmethod
     def _normalize_axis_names(raw_axes, field_name, allow_placeholder=False):
         if not isinstance(raw_axes, (list, tuple)):
             raise Exception(f"'{field_name}' argument in init_data must be a tuple of strings")
@@ -97,7 +101,7 @@ class VirtualProcessor:
 
         # If this is 2D array-like payload from sequencer, coerce to N x 4.
         if data and all(isinstance(row, (list, tuple)) for row in data):
-            rows = [list(row) for row in data]
+            rows = self._drop_empty_rows([list(row) for row in data])
             if all(all(self._is_number(v) for v in row) for row in rows):
                 # Respect declared schema rows if available.
                 schema_rows = None
@@ -108,6 +112,8 @@ class VirtualProcessor:
                 if schema_rows is not None and len(rows) > 0:
                     if len(rows) == schema_rows:
                         return rows
+                    if len(rows) > schema_rows and all(len(r) == len(rows[0]) for r in rows):
+                        return rows[:schema_rows]
                     if all(len(r) == len(rows[0]) for r in rows) and len(rows[0]) == schema_rows:
                         return [list(col) for col in zip(*rows)]
                 # No schema yet: preserve row-major payload as provided.
@@ -149,14 +155,94 @@ class VirtualProcessor:
                 return [list(data)]
             # 2D numeric -> RxN
             if all(isinstance(row, (list, tuple)) for row in data):
-                rows = [list(row) for row in data]
+                rows = self._drop_empty_rows([list(row) for row in data])
                 if all(all(self._is_number(v) for v in row) for row in rows):
+                    schema_rows = None
+                    if isinstance(self.data_schema, dict):
+                        v = self.data_schema.get('num_data')
+                        if isinstance(v, (int, np.integer)) and int(v) >= 0:
+                            schema_rows = int(v)
+                    if schema_rows is not None and len(rows) > schema_rows and all(len(r) == len(rows[0]) for r in rows):
+                        return rows[:schema_rows]
                     return rows
             raise Exception("save() 'data' must be a numeric array")
 
         if self._is_number(data):
             return [[data]]
         raise Exception("save() 'data' must be a numeric array")
+
+    @staticmethod
+    def _is_scan_object(value):
+        return isinstance(value, dict) and value.get("ty") in {"NoScan", "RangeScan", "CenterScan", "ExplicitScan"}
+
+    @staticmethod
+    def _scan_object(name, args, kwargs):
+        out = {"ty": name}
+        if name == "NoScan":
+            out["value"] = kwargs.get("value", args[0] if args else 0)
+            if "repetitions" in kwargs:
+                out["repetitions"] = kwargs["repetitions"]
+            return out
+        if name == "RangeScan":
+            for idx, key in enumerate(("start", "stop", "npoints")):
+                if key in kwargs:
+                    out[key] = kwargs[key]
+                elif idx < len(args):
+                    out[key] = args[idx]
+            if "randomize" in kwargs:
+                out["randomize"] = kwargs["randomize"]
+            if "seed" in kwargs:
+                out["seed"] = kwargs["seed"]
+            return out
+        if name == "CenterScan":
+            for idx, key in enumerate(("center", "span", "step")):
+                if key in kwargs:
+                    out[key] = kwargs[key]
+                elif idx < len(args):
+                    out[key] = args[idx]
+            if "randomize" in kwargs:
+                out["randomize"] = kwargs["randomize"]
+            if "seed" in kwargs:
+                out["seed"] = kwargs["seed"]
+            return out
+        if name == "ExplicitScan":
+            seq = kwargs.get("sequence", args[0] if args else [])
+            out["sequence"] = list(seq) if isinstance(seq, (list, tuple)) else []
+            return out
+        return out
+
+    @staticmethod
+    def _scan_values(scan):
+        if not isinstance(scan, dict):
+            if isinstance(scan, (list, tuple)):
+                return list(scan)
+            return [scan]
+        ty = scan.get("ty")
+        if ty == "NoScan":
+            reps = int(scan.get("repetitions") or 1)
+            return [scan.get("value")] * max(1, reps)
+        if ty == "RangeScan":
+            start = float(scan.get("start", 0.0))
+            stop = float(scan.get("stop", start))
+            npoints = max(1, int(scan.get("npoints", 1)))
+            vals = np.linspace(start, stop, npoints).tolist()
+        elif ty == "CenterScan":
+            center = float(scan.get("center", 0.0))
+            span = float(scan.get("span", 0.0))
+            step = float(scan.get("step", 1.0))
+            if step == 0:
+                raise ValueError("CenterScan step cannot be 0")
+            start = center - span / 2.0
+            stop = center + span / 2.0
+            vals = np.arange(start, stop + abs(step) / 1000.0, abs(step)).tolist()
+        elif ty == "ExplicitScan":
+            vals = list(scan.get("sequence") or [])
+        else:
+            vals = [scan]
+        if scan.get("randomize") and len(vals) > 1:
+            rng = np.random.default_rng(scan.get("seed", None))
+            vals = list(rng.permutation(vals))
+        return vals
 
     def parse(self, code):
         """
@@ -224,7 +310,28 @@ class VirtualProcessor:
                 elif op == 'LTE': return left <= right
                 elif op == 'GT': return left > right
                 elif op == 'GTE': return left >= right
+            elif node['type'] == 'CALL':
+                name = node.get('name')
+                args = [self.evaluate(item) for item in node.get('args', [])]
+                kwargs = {k: self.evaluate(v) for k, v in (node.get('kwargs') or {}).items()}
+                if name in {"NoScan", "RangeScan", "CenterScan", "ExplicitScan"}:
+                    return self._scan_object(name, args, kwargs)
+                raise ValueError(f"Unsupported function call: {name}")
         return node
+
+    def evaluate_param_value(self, node):
+        if isinstance(node, dict) and node.get('type') == 'VAR':
+            name = node.get('name')
+            return self.vars[name] if name in self.vars else str(name)
+        if isinstance(node, dict) and node.get('type') == 'TUPLE':
+            return tuple(self.evaluate_param_value(item) for item in node.get('items', []))
+        if isinstance(node, dict) and node.get('type') == 'CALL':
+            name = node.get('name')
+            args = [self.evaluate_param_value(item) for item in node.get('args', [])]
+            kwargs = {k: self.evaluate_param_value(v) for k, v in (node.get('kwargs') or {}).items()}
+            if name in {"NoScan", "RangeScan", "CenterScan", "ExplicitScan"}:
+                return self._scan_object(name, args, kwargs)
+        return self.evaluate(node)
 
     def start_proc(self, statements):
         """
@@ -268,6 +375,16 @@ class VirtualProcessor:
                 if not isinstance(value, bool):
                     raise ValueError(f"param '{name}' expects bool value")
                 return value
+            if dtype == 'string':
+                return str(value)
+            if dtype == 'scannable':
+                if not VirtualProcessor._is_scan_object(value):
+                    raise ValueError(f"param '{name}' expects a scan object")
+                return value
+            if dtype in ('number', 'auto'):
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"param '{name}' expects numeric value")
+                return value
             return value
         
         if stype == 'PARAM':
@@ -276,7 +393,7 @@ class VirtualProcessor:
                 val = run_arguments[stmt['name']]
                 self.logger.info("Using runtime override for param %s = %s", stmt['name'], val)
             else:
-                val = self.evaluate(stmt['value'])
+                val = self.evaluate_param_value(stmt['value']) if stmt.get('metadata') else self.evaluate(stmt['value'])
             val = coerce_param_value(stmt.get('dtype'), val, stmt.get('name'))
             self.vars[stmt['name']] = val
             self.logger.info(f"Defined param {stmt['name']} = {val}")
@@ -442,17 +559,23 @@ class VirtualProcessor:
             self.context['sleep'](duration)
             
         elif stype == 'FOR':
-            start = self.evaluate(stmt['start'])
-            end = self.evaluate(stmt['end'])
-            step = self.evaluate(stmt['step'])
             var = stmt['var']
-            self.logger.info("Entering FOR loop var=%s start=%s end=%s step=%s", var, start, end, step)
-            
-            # Create range
-            # Handle float steps
-            import numpy as np
-            # Use a small epsilon to include the end value if it matches the step
-            vals = np.arange(start, end + step/1000.0, step)
+            run_arguments = self.context.get('run_arguments') or {}
+            if stmt.get('iterable') is not None:
+                iterable = self.evaluate(stmt['iterable'])
+                if var in run_arguments:
+                    iterable = run_arguments[var]
+                    self.logger.info("Entering FOR loop var=%s using runtime scan override values=%s", var, iterable)
+                else:
+                    self.logger.info("Entering FOR loop var=%s iterable=%s", var, iterable)
+                vals = self._scan_values(iterable)
+            else:
+                start = self.evaluate(stmt['start'])
+                end = self.evaluate(stmt['end'])
+                step = self.evaluate(stmt['step'])
+                self.logger.info("Entering FOR loop var=%s start=%s end=%s step=%s", var, start, end, step)
+                # Use a small epsilon to include the end value if it matches the step.
+                vals = np.arange(start, end + step/1000.0, step)
             
             for val in vals:
                 self.vars[var] = float(val)

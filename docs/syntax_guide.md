@@ -21,10 +21,14 @@ dynp <name> = <value_or_expression>;
 **Example:**
 ```text
 param int shots = 100;
-param float detuning = 1.25;
+param float detuning = {value = 1.25, unit = "MHz", scale = 1000000, step = 1000, min = -100000000, max = 100000000, ndecimals = 3};
 param bool use_cooling = true;
+param enum state = {value = cool, choices = ("cool", "detect")};
 dynp phase_offset = get device.phase;
 ```
+
+Numeric metadata is exposed to MAQPIE as panel schema. `scale` is stored in backend units:
+the UI displays `value / scale` and sends `display_value * scale` back when queueing a run.
 
 ### 2. Setting Values
 Set a value to a parameter or a local variable.
@@ -118,11 +122,15 @@ sleep(0.5);
 ```
 
 ### 8. Loops
-Iterate over a range of values.
+Iterate over a range of values or over a scannable parameter.
 
 **Syntax:**
 ```text
 for <variable> in (from <start> to <end> step <step_size>) : {
+    <statements>
+}
+
+for <variable> in <scannable_parameter> : {
     <statements>
 }
 ```
@@ -133,6 +141,21 @@ for v in (from 0 to 10 step 0.1) : {
     set dac v;
     sleep(0.01);
 }
+
+param scannable pulse_scan = {value = RangeScan(start=0, stop=40, npoints=21, randomize=false), unit = "us", scale = 1};
+for pulse_time in pulse_scan : {
+    set dds.pulse_time_us pulse_time;
+}
+```
+
+Range loops are inspected as scannable parameters so MAQPIE can send one selected scan object
+back to the backend. Supported scan constructors are:
+
+```text
+NoScan(value=<number>, repetitions=<int>)
+RangeScan(start=<number>, stop=<number>, npoints=<int>, randomize=<bool>, seed=<int>)
+CenterScan(center=<number>, span=<number>, step=<number>, randomize=<bool>, seed=<int>)
+ExplicitScan(sequence=(<number>, <number>, ...))
 ```
 
 ### 9. Conditional Logic

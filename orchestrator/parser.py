@@ -56,11 +56,13 @@ class Lexer:
         Return a (multidigit) integer or float consumed from the input.
         """
         result = '-' if negative else ''
-        while self.current_char is not None and (self.current_char.isdigit() or self.current_char == '.'):
+        while self.current_char is not None and (self.current_char.isdigit() or self.current_char in '.eE+-'):
+            if self.current_char in '+-' and result and result[-1] not in 'eE':
+                break
             result += self.current_char
             self.advance()
         
-        if '.' in result:
+        if '.' in result or 'e' in result.lower():
             return Token('NUMBER', float(result), self.line)
         else:
             return Token('NUMBER', int(result), self.line)
@@ -268,18 +270,37 @@ class Parser:
 
     def param_decl(self):
         """
-        param_decl : PARAM (TYPE)? IDENTIFIER ASSIGN expression
+        param_decl : PARAM TYPE IDENTIFIER ASSIGN (expression | LBRACE param_field (COMMA param_field)* RBRACE)
         """
         self.process_token('PARAM')
-        dtype = None
-        if self.current_token.type == 'IDENTIFIER' and self.current_token.value in ('int', 'float', 'bool'):
-            dtype = self.current_token.value
-            self.process_token('IDENTIFIER')
+        if self.current_token.type != 'IDENTIFIER' or self.current_token.value not in ('int', 'float', 'bool', 'string', 'enum', 'scannable', 'number', 'auto'):
+            self.error("param requires an explicit type")
+        dtype = self.current_token.value
+        self.process_token('IDENTIFIER')
         name = self.current_token.value
         self.process_token('IDENTIFIER')
         self.process_token('ASSIGN')
-        val = self.expression()
-        return {'type': 'PARAM', 'name': name, 'value': val, 'dtype': dtype}
+        metadata = {}
+        if self.current_token.type == 'LBRACE':
+            self.process_token('LBRACE')
+            while self.current_token.type != 'RBRACE':
+                if self.current_token.type not in ('IDENTIFIER', 'STEP'):
+                    self.error("Expected parameter field name")
+                key = self.current_token.value
+                self.process_token(self.current_token.type)
+                self.process_token('ASSIGN')
+                metadata[key] = self.expression()
+                if self.current_token.type == 'COMMA':
+                    self.process_token('COMMA')
+                elif self.current_token.type != 'RBRACE':
+                    self.error("Expected ',' or '}' in parameter field block")
+            self.process_token('RBRACE')
+            if 'value' not in metadata:
+                self.error("parameter field block requires 'value'")
+            val = metadata.pop('value')
+        else:
+            val = self.expression()
+        return {'type': 'PARAM', 'name': name, 'value': val, 'dtype': dtype, 'metadata': metadata}
 
     def dyn_param_decl(self):
         """
@@ -398,16 +419,23 @@ class Parser:
         var_name = self.current_token.value
         self.process_token('IDENTIFIER')
         self.process_token('IN')
-        self.process_token('LPAREN')
-        self.process_token('FROM')
-        start = self.expression()
-        self.process_token('TO')
-        end = self.expression()
-        step = 1.0
-        if self.current_token.type == 'STEP':
-            self.process_token('STEP')
-            step = self.expression()
-        self.process_token('RPAREN')
+        if self.current_token.type == 'LPAREN':
+            self.process_token('LPAREN')
+            self.process_token('FROM')
+            start = self.expression()
+            self.process_token('TO')
+            end = self.expression()
+            step = 1.0
+            if self.current_token.type == 'STEP':
+                self.process_token('STEP')
+                step = self.expression()
+            self.process_token('RPAREN')
+            iterable = None
+        else:
+            start = None
+            end = None
+            step = None
+            iterable = self.expression()
         self.process_token('COLON')
         
         self.process_token('LBRACE')
@@ -422,6 +450,7 @@ class Parser:
             'start': start,
             'end': end,
             'step': step,
+            'iterable': iterable,
             'body': body
         }
 
@@ -490,6 +519,25 @@ class Parser:
         elif self.current_token.type == 'IDENTIFIER':
             name = self.current_token.value
             self.process_token('IDENTIFIER')
+            if self.current_token.type == 'LPAREN':
+                self.process_token('LPAREN')
+                args = []
+                kwargs = {}
+                while self.current_token.type != 'RPAREN':
+                    if self.current_token.type in ('IDENTIFIER', 'STEP'):
+                        key_or_var = self.current_token.value
+                        self.process_token(self.current_token.type)
+                        if self.current_token.type == 'ASSIGN':
+                            self.process_token('ASSIGN')
+                            kwargs[key_or_var] = self.expression()
+                        else:
+                            args.append({'type': 'VAR', 'name': key_or_var})
+                    else:
+                        args.append(self.expression())
+                    if self.current_token.type == 'COMMA':
+                        self.process_token('COMMA')
+                self.process_token('RPAREN')
+                return {'type': 'CALL', 'name': name, 'args': args, 'kwargs': kwargs}
             return {'type': 'VAR', 'name': name}
         elif self.current_token.type == 'GET':
             self.process_token('GET')

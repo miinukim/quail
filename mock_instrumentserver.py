@@ -254,8 +254,6 @@ class MockInstrumentServer:
 
         shot_axis = []
         counts_row = []
-        bright_row = []
-        running_prob_row = []
         bright_total = 0.0
 
         for shot in range(nshots):
@@ -278,12 +276,10 @@ class MockInstrumentServer:
             running_prob = bright_total / float(shot + 1)
 
             counts_row.append(round(counts, 3))
-            bright_row.append(classified_bright)
-            running_prob_row.append(round(running_prob, 6))
 
         self.state["pmt.last_mean_counts"] = round(sum(counts_row) / max(len(counts_row), 1), 4)
-        self.state["pmt.last_bright_fraction"] = round(running_prob_row[-1] if running_prob_row else 0.0, 6)
-        return [shot_axis, counts_row, bright_row, running_prob_row]
+        self.state["pmt.last_bright_fraction"] = round(running_prob if nshots > 0 else 0.0, 6)
+        return [shot_axis, counts_row, [], []]
 
     @staticmethod
     def _infer_npoints(program):

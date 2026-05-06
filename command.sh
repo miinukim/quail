@@ -430,9 +430,11 @@ start_mock_instrumentserver() {
     print "mock instrumentserver: port ${INSTRUMENTSERVER_PORT:-5555} already in use (pid: ${listeners}); skipping launch"
     return 0
   fi
+  local conda_base
+  conda_base="$(conda info --base)"
   print "starting mock instrumentserver on ${INSTRUMENTSERVER_PORT:-5555}"
   start_bg instrumentserver "$BACKEND_DIR" \
-    "conda run -n '$CONDA_ENV' python '$MOCK_INSTRUMENTSERVER_SCRIPT' --port '${INSTRUMENTSERVER_PORT:-5555}'"
+    "source '$conda_base/etc/profile.d/conda.sh' && conda activate '$CONDA_ENV' && exec python '$MOCK_INSTRUMENTSERVER_SCRIPT' --port '${INSTRUMENTSERVER_PORT:-5555}'"
 }
 
 start_celery() {
