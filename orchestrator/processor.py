@@ -19,6 +19,7 @@ class VirtualProcessor:
         self.context = context
         self.vars = {}   # name -> value (includes params)
         self.data_schema = None # { 'param_axes': [], 'num_data': N }
+        self.param_defaults = {}
         
         # Dedicated engine logger; output is routed by Django LOGGING to logs/engine.log
         self.logger = logging.getLogger("quail.engine.processor")
@@ -244,6 +245,22 @@ class VirtualProcessor:
             vals = list(rng.permutation(vals))
         return vals
 
+    @staticmethod
+    def _coerce_scan_to_declared_type(value, default):
+        if not VirtualProcessor._is_scan_object(value):
+            raise ValueError("expected a scan object")
+        if not VirtualProcessor._is_scan_object(default):
+            return value
+        declared_ty = default.get("ty")
+        if value.get("ty") == declared_ty:
+            return value
+        coerced = {"ty": declared_ty}
+        for key, fallback in default.items():
+            if key == "ty":
+                continue
+            coerced[key] = value.get(key, fallback)
+        return coerced
+
     def parse(self, code):
         """
         Parse the given code into an AST.
@@ -380,7 +397,7 @@ class VirtualProcessor:
             if dtype == 'scannable':
                 if not VirtualProcessor._is_scan_object(value):
                     raise ValueError(f"param '{name}' expects a scan object")
-                return value
+                return VirtualProcessor._coerce_scan_to_declared_type(value, self.param_defaults.get(name))
             if dtype in ('number', 'auto'):
                 if isinstance(value, bool) or not isinstance(value, (int, float)):
                     raise ValueError(f"param '{name}' expects numeric value")
@@ -394,6 +411,8 @@ class VirtualProcessor:
                 self.logger.info("Using runtime override for param %s = %s", stmt['name'], val)
             else:
                 val = self.evaluate_param_value(stmt['value']) if stmt.get('metadata') else self.evaluate(stmt['value'])
+            default_val = self.evaluate_param_value(stmt['value']) if stmt.get('metadata') else self.evaluate(stmt['value'])
+            self.param_defaults[stmt['name']] = default_val
             val = coerce_param_value(stmt.get('dtype'), val, stmt.get('name'))
             self.vars[stmt['name']] = val
             self.logger.info(f"Defined param {stmt['name']} = {val}")
