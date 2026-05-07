@@ -15,8 +15,19 @@ Use `dynp` for internal/dynamic parameters that should not be exposed in the pan
 **Syntax:**
 ```text
 param <type> <name> = <value_or_expression>;
+param <type> <name> = {value = <value_or_expression>, <field> = <metadata_value>, ...};
 dynp <name> = <value_or_expression>;
 ```
+
+Supported parameter types are:
+
+```text
+int, float, bool, string, enum, scannable, number, auto
+```
+
+Parameter metadata must use the brace object form shown above. Fields are comma-separated.
+Old space-separated metadata such as `param float x = 1 unit = "MHz";` is invalid.
+The brace form must include `value`.
 
 **Example:**
 ```text
@@ -24,11 +35,15 @@ param int shots = 100;
 param float detuning = {value = 1.25, unit = "MHz", scale = 1000000, step = 1000, min = -100000000, max = 100000000, ndecimals = 3};
 param bool use_cooling = true;
 param enum state = {value = cool, choices = ("cool", "detect")};
+param scannable pulse_scan = {value = RangeScan(start=0, stop=20, npoints=11), unit = "us", scale = 1};
 dynp phase_offset = get device.phase;
 ```
 
 Numeric metadata is exposed to MAQPIE as panel schema. `scale` is stored in backend units:
 the UI displays `value / scale` and sends `display_value * scale` back when queueing a run.
+Scannable metadata is also exposed to MAQPIE, but the scan type is locked to the type declared
+by experiment code. The UI can edit fields within the declared scan object, not switch
+`RangeScan` to `CenterScan`, etc.
 
 ### 2. Setting Values
 Set a value to a parameter or a local variable.
@@ -56,7 +71,8 @@ get <alias_or_path>
 ```
 
 ### 4. Running the Sequencer
-Trigger the FPGA sequencer and capture returned data. The return value is a single data object (4xN array).
+Trigger the FPGA sequencer and capture returned data. The return value is a single numeric data object,
+usually an `R x N` row-major array where `R` is the number of data rows declared by `init_data(data=...)`.
 
 **Syntax:**
 ```text
@@ -96,7 +112,10 @@ init_data(param=("voltage", "current"), data=("x", "y", "z", _));
 
 ### 6. Saving Data
 Save data points to the experiment log/database. The arguments must match the initialized schema.
-When `init_data(data=...)` is given, `save(..., data=...)` must have the same number of rows.
+When `init_data(data=...)` is given, `save(..., data=...)` should have the same number of rows.
+The processor drops empty rows and truncates extra rows to the declared row count to tolerate
+sequencer payloads with unused trailing rows, but experiments should still declare only the rows
+that should be saved.
 
 **Syntax:**
 ```text
@@ -142,14 +161,23 @@ for v in (from 0 to 10 step 0.1) : {
     sleep(0.01);
 }
 
-param scannable pulse_scan = {value = RangeScan(start=0, stop=40, npoints=21, randomize=false), unit = "us", scale = 1};
+param scannable pulse_scan = {value = RangeScan(start=0, stop=20, npoints=11, randomize=false), unit = "us", scale = 1};
 for pulse_time in pulse_scan : {
     set dds.pulse_time_us pulse_time;
 }
 ```
 
-Range loops are inspected as scannable parameters so MAQPIE can send one selected scan object
-back to the backend. Supported scan constructors are:
+Regular range loops are fixed by the experiment code and are not editable from MAQPIE.
+Use a `param scannable` only when the experiment intentionally exposes scan values to the UI:
+
+```text
+param scannable pulse_scan = {value = RangeScan(start=0, stop=20, npoints=11), unit = "us", scale = 1};
+for pulse_time in pulse_scan : {
+    set dds.pulse_time_us pulse_time;
+}
+```
+
+Supported scan constructors are:
 
 ```text
 NoScan(value=<number>, repetitions=<int>)
@@ -157,6 +185,8 @@ RangeScan(start=<number>, stop=<number>, npoints=<int>, randomize=<bool>, seed=<
 CenterScan(center=<number>, span=<number>, step=<number>, randomize=<bool>, seed=<int>)
 ExplicitScan(sequence=(<number>, <number>, ...))
 ```
+
+`randomize` and `seed` are optional for `RangeScan` and `CenterScan`.
 
 ### 9. Conditional Logic
 Execute statements based on a condition.

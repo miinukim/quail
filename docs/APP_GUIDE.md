@@ -23,7 +23,8 @@ This guide maps the QuAIL codebase by Django app, with the current runtime flow 
   - `core/ttl_state.py`
 - Main features:
   - Token login/logout (`/api/login/`, `/api/logout/`).
-  - TTL list/set/override REST API using in-memory state.
+  - TTL list/set/override REST API using in-memory state:
+    `/api/devices/ttl/devices/`, `/api/devices/ttl/level/`, `/api/devices/ttl/override/`.
 - Important behavior:
   - TTL state is process-memory only (`TTL_STATE`), not persisted to DB.
 
@@ -43,10 +44,15 @@ This guide maps the QuAIL codebase by Django app, with the current runtime flow 
   - `Archive`: snapshots for post-run data access.
 - Main endpoints:
   - `/api/runs/` list/create/retrieve/delete.
-  - `/api/runs/{id}/start/`, `/api/runs/{id}/abort/`.
-  - `/api/runs/{id}/datasets/`, dataset meta/data/log endpoints.
-  - `/api/files/*` script/fpga browsing.
-  - `/api/archives/*`.
+  - `/api/runs/{id}/abort/`.
+  - `/api/runs/{id}/logs/`.
+  - `/api/runs/{id}/datasets/`.
+  - `/api/runs/{id}/datasets/{dataset_name}/meta/`.
+  - `/api/runs/{id}/datasets/{dataset_name}/data/`.
+  - `/api/runs/{id}/datasets/{dataset_name}/query/`.
+  - `/api/runs/{id}/datasets/{dataset_name}/download/`.
+  - `/api/files/?type=script|fpga&path=...` and `/api/files/read/?type=script|fpga&path=...`.
+  - `/api/archives/` CRUD plus archive dataset data/query/download endpoints.
 - Worker flow:
   - `run_experiment_task`:
     1. marks run `RUNNING`
@@ -94,11 +100,17 @@ This guide maps the QuAIL codebase by Django app, with the current runtime flow 
   - `Panel`: script-backed UI config with schema, defaults, schedule defaults.
   - `PanelConfig`: saved snapshot/version metadata.
 - Main endpoints:
-  - `/api/panels/` CRUD + run + inspect-class + from-config.
-  - `/api/panel-configs/` CRUD + apply/from-panel operations.
+  - `/api/panels/` CRUD.
+  - `/api/panels/inspect-classes/`.
+  - `/api/panels/from-config/`.
+  - `/api/panel-configs/` CRUD.
+  - `/api/panel-configs/from-panel/`.
+  - `/api/panel-configs/{config_id}/apply-panel/`.
 - Scheduler flow:
   - `PanelViewSet.run()` creates immediate run (`NOW`) or enqueues `process_panel_run`.
   - `process_panel_run` supports `NOW`, `TIMED`, `RECURRING`.
+  - MAQPIE currently creates panel-backed runs through `/api/runs/` with `panel_id`;
+    the direct panel run endpoint remains available for compatibility.
 
 ## `datahandler` app
 
@@ -108,17 +120,19 @@ This guide maps the QuAIL codebase by Django app, with the current runtime flow 
   - `datahandler/routing.py`
 - Main WS routes:
   - `/runs/stream/` run list snapshots with filters.
-  - `/runs/{run_id}/status/` simulated status stream (currently synthetic).
-  - `/runs/{run_id}/logs/` simulated log stream (currently synthetic).
-  - `/runs/{run_id}/datasets/{dataset_id}/stream/` currently disabled synthetic dataset stream (returns error and closes).
-  - `/ttl/status/` TTL status stream.
+  - `/runs/{run_id}/status/` legacy per-run status stream.
+  - `/runs/{run_id}/logs/` legacy per-run log stream.
+  - `/runs/{run_id}/datasets/{dataset_id_or_name}/stream/` dataset snapshot/append stream.
+  - `/devices/ttl/status/` TTL status stream.
 - Important behavior:
   - Run list stream is real (DB-backed).
-  - Status/log consumers are still simulation-style, not wired to actual run events.
+  - Dataset streams use the same logical row-table shape as the REST data endpoint.
+  - The per-run status/log streams currently emit simulated compatibility data and
+    are not part of the main MAQPIE path.
 
 ## End-to-End Execution Map
 
-1. Frontend creates run (`/api/runs/` or `/api/panels/{id}/run/`).
+1. Frontend creates run with `/api/runs/` (`panel_id` may be supplied for panel-backed runs).
 2. `expmanager` creates `ExperimentRun` as `QUEUED`.
 3. Celery executes `run_experiment_task`.
 4. `orchestrator` engine runs script and talks to instrumentserver.
@@ -136,4 +150,3 @@ This guide maps the QuAIL codebase by Django app, with the current runtime flow 
   - `quail/logs/important.log`
   - `.logs/celery.log`
   - `.logs/instrumentserver.log`
-

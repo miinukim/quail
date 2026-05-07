@@ -1,7 +1,8 @@
-# Data Backend Guide For `iquip-web`
+# Data Backend Guide For MAQPIE
 
-This document explains how a custom backend should send dataset data to `iquip-web`.
-It is written from the current frontend implementation in [DataViewerView.tsx](/home/server/Desktop/Codes/ent/iquip-web/src/views/DataViewerView.tsx).
+This document explains how a custom backend should send dataset data to MAQPIE.
+It is written from the current frontend implementation in `maqpie/src/views/DataViewerView.tsx`
+and `maqpie/src/lib/api.ts`.
 
 The goal is practical interoperability:
 
@@ -20,6 +21,9 @@ The Data Viewer consumes three things for a run or archive:
 
 It can also trigger a dataset file download from the viewer toolbar.
 
+All REST paths below are relative to the configured API base, normally `/api`.
+WebSocket paths are relative to the same host without the `/api` prefix.
+
 The preferred flow is:
 
 1. `GET /runs/<rid>/datasets/`
@@ -32,6 +36,87 @@ Archive mode is similar, but the data payload comes from:
 1. `GET /archives/<archive_id>/`
 2. `GET /archives/<archive_id>/datasets/<dataset_name>/data/?format=json`
 3. `GET /archives/<archive_id>/datasets/<dataset_name>/download/` for file export
+
+## Current API Surface Used By MAQPIE
+
+The frontend currently calls these REST endpoints:
+
+### Auth
+
+- `POST /login/`
+- `POST /logout/`
+
+### Files
+
+- `GET /files/?type=script|fpga&path=<relative_dir>`
+- `GET /files/read/?type=script|fpga&path=<relative_file>`
+
+### Panels And Panel Configs
+
+- `POST /panels/`
+- `GET /panels/<panel_id>/`
+- `PATCH /panels/<panel_id>/`
+- `DELETE /panels/<panel_id>/`
+- `GET /panels/?...`
+- `POST /panels/inspect-classes/`
+- `POST /panels/from-config/`
+- `GET /panel-configs/?...`
+- `POST /panel-configs/from-panel/`
+- `POST /panel-configs/<config_id>/apply-panel/`
+- `PATCH /panel-configs/<config_id>/`
+- `DELETE /panel-configs/<config_id>/`
+
+### Workspaces
+
+- `GET /workspaces/`
+- `POST /workspaces/`
+- `PATCH /workspaces/<workspace_id>/`
+- `DELETE /workspaces/<workspace_id>/`
+- `POST /workspaces/<workspace_id>/activate/`
+- `GET /workspaces/<workspace_id>/layout/`
+- `PUT /workspaces/<workspace_id>/layout/`
+
+### Runs, Logs, And Datasets
+
+- `POST /runs/`
+- `GET /runs/<rid>/`
+- `POST /runs/<rid>/abort/`
+- `DELETE /runs/<rid>/`
+- `GET /runs/<rid>/logs/`
+- `GET /runs/<rid>/datasets/`
+- `GET /runs/<rid>/datasets/<dataset_name>/meta/`
+- `GET /runs/<rid>/datasets/<dataset_name>/data/?format=json`
+- `GET /runs/<rid>/datasets/<dataset_name>/download/`
+- `POST /runs/<rid>/datasets/<dataset_name>/query/`
+
+Run creation accepts either an explicit `script_path` or a `panel_id`.
+MAQPIE sends editable panel values as `arguments`; the UI-side alias `param_values`
+is normalized to `arguments` before the request is sent.
+
+### TTL
+
+- `GET /devices/ttl/devices/`
+- `POST /devices/ttl/level/`
+- `POST /devices/ttl/override/`
+
+### Archives
+
+- `POST /archives/`
+- `GET /archives/?...`
+- `GET /archives/<archive_id>/`
+- `PATCH /archives/<archive_id>/`
+- `DELETE /archives/<archive_id>/`
+- `GET /archives/<archive_id>/datasets/<dataset_name>/data/?format=json`
+- `GET /archives/<archive_id>/datasets/<dataset_name>/download/`
+- `POST /archives/<archive_id>/datasets/<dataset_name>/query/`
+
+### WebSockets
+
+- `WS /runs/stream/`
+- `WS /runs/<rid>/datasets/<dataset_name>/stream/`
+- `WS /devices/ttl/status/`
+
+The frontend appends `?token=<auth_token>` to WebSocket URLs.
 
 ## Download Endpoint
 
@@ -387,7 +472,7 @@ Schema mode is a special matrix/block mode used when:
 - `columns` is empty
 - `metadata.data_axes_effective` is present and non-empty
 
-The condition is implemented in [DataViewerView.tsx](/home/server/Desktop/Codes/ent/iquip-web/src/views/DataViewerView.tsx).
+The condition is implemented in `maqpie/src/views/DataViewerView.tsx`.
 
 In schema mode, the frontend assumes `data` represents row blocks rather than point rows.
 
@@ -575,6 +660,9 @@ Dataset streaming is now aligned with the same row-table model used by the HTTP 
 Preferred websocket route:
 
 - `WS /runs/<rid>/datasets/<dataset_name>/stream/`
+
+The current route parameter is named `dataset_id` in Django Channels, but the
+resolver accepts either a numeric dataset id or the dataset name MAQPIE passes.
 
 The backend should treat websocket delivery as:
 
@@ -767,7 +855,7 @@ with metadata:
 
 ## Summary
 
-If you are building a custom backend for `iquip-web`, the safest contract is:
+If you are building a custom backend for MAQPIE, the safest contract is:
 
 1. return dataset names from the dataset list endpoint
 2. return metadata with `shape` and `metadata.*axes`

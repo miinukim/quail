@@ -63,7 +63,7 @@ QuAIL is a Django-based experiment management system for experiments with device
 - **Responsibilities**:
   - User authentication
   - Script creation/editing
-  - Experiment execution control (start/abort)
+  - Experiment execution control (queue/abort)
   - Real-time visualization of logs and data
 
 ### 2. Django Apps
@@ -122,15 +122,14 @@ QuAIL is a Django-based experiment management system for experiments with device
 ### Phase 1: Experiment Preparation
 
 ```
-1. User creates/edits ExperimentScript via API
-   POST /api/experiment-scripts/
-   ├─ Script code (custom syntax)
-   ├─ FPGA code (optional)
-   └─ Metadata (name, description)
+1. User chooses a script through MAQPIE File Explorer
+   GET /api/files/?type=script
+   GET /api/files/read/?type=script&path=...
+   └─ Script code (custom syntax)
 
 2. Frontend creates ExperimentRun
-   POST /api/run-requests/
-   ├─ Links to ExperimentScript
+   POST /api/runs/
+   ├─ Uses script_path directly or supplies panel_id
    ├─ Sets priority
    └─ Status: QUEUED
 ```
@@ -138,13 +137,13 @@ QuAIL is a Django-based experiment management system for experiments with device
 ### Phase 2: Experiment Initiation
 
 ```
-3. User clicks "Start" in UI
-   POST /api/run-requests/{id}/start/
+3. User queues the run in UI
+   POST /api/runs/
 
-4. ExperimentRunViewSet.start() [expmanager/views.py]
-   ├─ Validates status == QUEUED
-   ├─ Calls: run_experiment_task.apply_async(args=[run_id], priority=run_request.priority)
-   └─ Returns: {status: "Experiment queued", task_id: "..."}
+4. ExperimentRunViewSet.create() [expmanager/views.py]
+   ├─ Normalizes schedule/priority/panel defaults
+   ├─ Creates or schedules ExperimentRun
+   └─ Dispatches run_experiment_task for immediate runs
 
 5. Celery Worker picks up task [expmanager/tasks.py]
    └─ run_experiment_task(run_id)
@@ -302,7 +301,7 @@ for v in (from 0 to 5 step 0.1) : {
 ```
 User clicks "Abort" in UI
     ↓
-POST /api/run-requests/{id}/abort/
+POST /api/runs/{id}/abort/
     ↓
 ExperimentRunViewSet.abort()
     ├─ Validates status in [QUEUED, RUNNING]

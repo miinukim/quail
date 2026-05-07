@@ -62,7 +62,7 @@ twine check dist/*              # Verify package
 - **API Server**: http://localhost:8000/
 - **Admin Panel**: http://localhost:8000/admin/
 - **API Endpoints**: http://localhost:8000/api/
-- **WebSocket**: ws://localhost:8000/ws/experiment/{run_id}/
+- **WebSockets**: ws://localhost:8000/runs/stream/, ws://localhost:8000/runs/{run_id}/datasets/{dataset}/stream/
 
 ## Next Steps
 
