@@ -8,6 +8,7 @@ import random
 import datetime
 import h5py
 import numpy as np
+from django.conf import settings
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from core.ttl_state import TTL_DEVICES, TTL_STATE
@@ -15,6 +16,12 @@ from expmanager.dataset_query import DatasetQueryError, execute_query
 from expmanager.models import Dataset, ExperimentRun
 from expmanager.dataset_payloads import dataset_to_point_rows, open_h5_read
 from expmanager.serializers import ExperimentRunListSerializer
+
+
+STREAM_SNAPSHOT_MAX_ROWS = int(getattr(settings, "DATASET_STREAM_SNAPSHOT_MAX_ROWS", 5000))
+STREAM_APPEND_MAX_ROWS = int(getattr(settings, "DATASET_STREAM_APPEND_MAX_ROWS", 2000))
+STREAM_QUERY_SOURCE_MAX_ROWS = int(getattr(settings, "DATASET_STREAM_QUERY_SOURCE_MAX_ROWS", 50000))
+STREAM_QUERY_MIN_INTERVAL_SEC = float(getattr(settings, "DATASET_STREAM_QUERY_MIN_INTERVAL_SEC", 2.0))
 
 
 def _now_iso():
@@ -30,8 +37,60 @@ def _dataset_stream_message(dataset: Dataset, payload: dict, message_type: str):
         "columns": payload.get("columns", []),
         "data": payload.get("data", []),
         "rows": payload.get("rows", []),
+        "truncated": bool(payload.get("truncated", False)),
+        "row_count": payload.get("row_count"),
+        "sent_rows": payload.get("sent_rows"),
         "updated_at": _now_iso(),
     }
+
+
+def _tail_rows(rows, limit: int):
+    if not isinstance(rows, list):
+        return rows, False, None, None
+    row_count = len(rows)
+    if limit <= 0 or row_count <= limit:
+        return rows, False, row_count, row_count
+    return rows[-limit:], True, row_count, limit
+
+
+def _limit_table_payload(payload: dict, key: str, limit: int):
+    rows, truncated, row_count, sent_rows = _tail_rows(payload.get(key, []), limit)
+    return {
+        **payload,
+        key: rows,
+        "truncated": truncated,
+        "row_count": row_count,
+        "sent_rows": sent_rows,
+    }
+
+
+def _load_h5_table(file_path: str, metadata: dict | None = None, limit_rows: int | None = None):
+    with open_h5_read(file_path) as f:
+        data_ds = f["data"] if "data" in f else None
+        params_ds = f["params"] if "params" in f else None
+        file_meta = {}
+        for key in f.attrs.keys():
+            value = f.attrs.get(key)
+            if isinstance(value, np.ndarray):
+                file_meta[key] = value.tolist()
+            else:
+                file_meta[key] = value
+        combined_meta = dict(metadata or {})
+        combined_meta.update(file_meta)
+        if data_ds is None:
+            data_arr = np.array([])
+            params_arr = np.array(params_ds) if params_ds is not None else None
+        elif limit_rows and len(data_ds.shape) == 3 and data_ds.shape[1] > 0:
+            width = int(data_ds.shape[1])
+            saves = int(data_ds.shape[2])
+            keep_saves = max(1, min(saves, int(np.ceil(limit_rows / width))))
+            start = max(0, saves - keep_saves)
+            data_arr = np.array(data_ds[:, :, start:])
+            params_arr = np.array(params_ds[:, start:]) if params_ds is not None else None
+        else:
+            data_arr = np.array(data_ds)
+            params_arr = np.array(params_ds) if params_ds is not None else None
+        return dataset_to_point_rows(data_arr, params_arr, combined_meta)
 
 @database_sync_to_async
 def _fetch_runs(filters):
@@ -199,6 +258,9 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
         self.dataset_ref = self.scope["url_route"]["kwargs"]["dataset_id"]
         self.group_name = f"run_{self.run_id}"
         self.query_text = None
+        self._query_snapshot_pending = False
+        self._last_query_snapshot_at = 0.0
+        self._running = True
         self.dataset = await _resolve_dataset(self.run_id, self.dataset_ref)
         await self.accept()
         if self.dataset is None:
@@ -216,25 +278,10 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
         await self.channel_layer.group_add(self.group_name, self.channel_name)
-        snapshot = await _load_dataset_table(self.dataset.id)
-        if snapshot is None:
-            await self.send(
-                text_data=json.dumps(
-                    {
-                        "type": "error",
-                        "rid": self.run_id,
-                        "dataset_id": str(self.dataset.id),
-                        "name": self.dataset.name,
-                        "message": "Dataset could not be loaded.",
-                        "updated_at": _now_iso(),
-                    }
-                )
-            )
-            await self.close()
-            return
         await self._send_current_snapshot()
 
     async def disconnect(self, close_code):
+        self._running = False
         dataset = getattr(self, "dataset", None)
         if dataset is not None:
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
@@ -281,7 +328,7 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
                 )
                 return
         else:
-            payload = await _load_dataset_table(dataset.id)
+            payload = await _load_dataset_table(dataset.id, STREAM_SNAPSHOT_MAX_ROWS)
 
         if payload is None:
             await self.send(
@@ -298,7 +345,23 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
             )
             return
 
+        payload = _limit_table_payload(payload, "data", STREAM_SNAPSHOT_MAX_ROWS)
         await self.send(text_data=json.dumps(_dataset_stream_message(dataset, payload, "snapshot")))
+
+    async def _send_query_snapshot_later(self):
+        if self._query_snapshot_pending:
+            return
+        self._query_snapshot_pending = True
+        try:
+            elapsed = asyncio.get_running_loop().time() - self._last_query_snapshot_at
+            delay = max(0.0, STREAM_QUERY_MIN_INTERVAL_SEC - elapsed)
+            if delay:
+                await asyncio.sleep(delay)
+            if self._running and self.query_text:
+                await self._send_current_snapshot()
+                self._last_query_snapshot_at = asyncio.get_running_loop().time()
+        finally:
+            self._query_snapshot_pending = False
 
     async def new_data(self, event):
         dataset = getattr(self, "dataset", None)
@@ -315,13 +378,14 @@ class DatasetStreamConsumer(AsyncWebsocketConsumer):
         if not isinstance(rows, list) or not isinstance(columns, list):
             return
         if self.query_text:
-            await self._send_current_snapshot()
+            asyncio.create_task(self._send_query_snapshot_later())
             return
+        payload = _limit_table_payload({"columns": columns, "rows": rows}, "rows", STREAM_APPEND_MAX_ROWS)
         await self.send(
             text_data=json.dumps(
                 _dataset_stream_message(
                     dataset,
-                    {"columns": columns, "rows": rows},
+                    payload,
                     "append",
                 )
             )
@@ -343,24 +407,12 @@ def _resolve_dataset(run_id: int, dataset_ref: str):
 
 
 @database_sync_to_async
-def _load_dataset_table(dataset_id: int):
+def _load_dataset_table(dataset_id: int, limit_rows: int | None = None):
     dataset = Dataset.objects.select_related("experiment_run").filter(id=dataset_id).first()
     if dataset is None:
         return None
     try:
-        with open_h5_read(dataset.file_path) as f:
-            data_arr = np.array(f["data"]) if "data" in f else np.array([])
-            params_arr = np.array(f["params"]) if "params" in f else None
-            file_meta = {}
-            for key in f.attrs.keys():
-                value = f.attrs.get(key)
-                if isinstance(value, np.ndarray):
-                    file_meta[key] = value.tolist()
-                else:
-                    file_meta[key] = value
-            combined_meta = dict(dataset.metadata or {})
-            combined_meta.update(file_meta)
-            return dataset_to_point_rows(data_arr, params_arr, combined_meta)
+        return _load_h5_table(dataset.file_path, dataset.metadata or {}, limit_rows=limit_rows)
     except (OSError, KeyError, ValueError, h5py.H5Error):
         return None
 
@@ -371,24 +423,12 @@ def _load_dataset_query_table(dataset_id: int, query_text: str):
     if dataset is None:
         return None
     try:
-        with open_h5_read(dataset.file_path) as f:
-            data_arr = np.array(f["data"]) if "data" in f else np.array([])
-            params_arr = np.array(f["params"]) if "params" in f else None
-            file_meta = {}
-            for key in f.attrs.keys():
-                value = f.attrs.get(key)
-                if isinstance(value, np.ndarray):
-                    file_meta[key] = value.tolist()
-                else:
-                    file_meta[key] = value
-            combined_meta = dict(dataset.metadata or {})
-            combined_meta.update(file_meta)
-            table = dataset_to_point_rows(data_arr, params_arr, combined_meta)
-            result = execute_query(table.get("columns", []), table.get("data", []), query_text)
-            return {
-                "columns": result.get("columns", []),
-                "data": result.get("data", []),
-            }
+        table = _load_h5_table(dataset.file_path, dataset.metadata or {}, limit_rows=STREAM_QUERY_SOURCE_MAX_ROWS)
+        result = execute_query(table.get("columns", []), table.get("data", []), query_text)
+        return _limit_table_payload({
+            "columns": result.get("columns", []),
+            "data": result.get("data", []),
+        }, "data", STREAM_SNAPSHOT_MAX_ROWS)
     except DatasetQueryError:
         raise
     except (OSError, KeyError, ValueError, h5py.H5Error):

@@ -30,12 +30,39 @@ import h5py
 import numpy as np
 
 
-def _load_dataset_table(dataset, slice_expr=None):
+def _positive_int(value, default=None):
+    try:
+        n = int(value)
+    except Exception:
+        return default
+    return n if n > 0 else default
+
+
+def _tail_table_rows(table, limit_rows=None):
+    limit = _positive_int(limit_rows)
+    if limit is None:
+        return table
+    rows = table.get('data')
+    if isinstance(rows, list) and len(rows) > limit:
+        return {
+            **table,
+            'data': rows[-limit:],
+            'truncated': True,
+            'row_count': len(rows),
+            'sent_rows': limit,
+        }
+    return {
+        **table,
+        'truncated': False,
+        'row_count': len(rows) if isinstance(rows, list) else None,
+        'sent_rows': len(rows) if isinstance(rows, list) else None,
+    }
+
+
+def _load_dataset_table(dataset, slice_expr=None, limit_rows=None):
     with open_h5_read(dataset.file_path) as f:
         if 'data' not in f:
             raise KeyError('Data not present in file')
-        arr = np.array(f['data'])
-        params_arr = np.array(f['params']) if 'params' in f else None
         combined_meta = dict(dataset.metadata or {})
         for key in ('param_axes', 'data_axes', 'data_axes_effective', 'num_data'):
             if key in f.attrs:
@@ -44,6 +71,8 @@ def _load_dataset_table(dataset, slice_expr=None):
                     val = val.tolist()
                 combined_meta[key] = val
 
+        data_ds = f['data']
+        params_ds = f['params'] if 'params' in f else None
         if slice_expr:
             slices = []
             for part in slice_expr.split(','):
@@ -58,10 +87,23 @@ def _load_dataset_table(dataset, slice_expr=None):
                         slices.append(slice(start, stop))
                     else:
                         slices.append(int(part))
-            arr = arr[tuple(slices)]
+            arr = np.array(data_ds[tuple(slices)])
+            params_arr = np.array(params_ds) if params_ds is not None else None
+        else:
+            limit = _positive_int(limit_rows)
+            if limit is not None and len(data_ds.shape) == 3 and data_ds.shape[1] > 0:
+                width = int(data_ds.shape[1])
+                saves = int(data_ds.shape[2])
+                keep_saves = max(1, min(saves, int(np.ceil(limit / width))))
+                start = max(0, saves - keep_saves)
+                arr = np.array(data_ds[:, :, start:])
+                params_arr = np.array(params_ds[:, start:]) if params_ds is not None else None
+            else:
+                arr = np.array(data_ds)
+                params_arr = np.array(params_ds) if params_ds is not None else None
 
         table = dataset_to_point_rows(arr, params_arr, combined_meta)
-        return table, combined_meta
+        return _tail_table_rows(table, limit_rows), combined_meta
 
 
 def _dataset_table_to_csv_response(table, filename):
@@ -345,9 +387,10 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path=r'datasets/(?P<dataset_name>[^/]+)/data')
     def dataset_data(self, request, pk=None, dataset_name=None):
-        """GET data with optional ?format=json|npy|hdf5 and ?slice=0:100,:"""
+        """GET data with optional ?format=json|npy|hdf5, ?slice=0:100,:, and ?limit_rows=N."""
         fmt = request.query_params.get('format', 'json')
         slice_expr = request.query_params.get('slice')
+        limit_rows = request.query_params.get('limit_rows')
         experiment_run = self.get_object()
 
         try:
@@ -359,7 +402,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            table, _combined_meta = _load_dataset_table(dataset, slice_expr=slice_expr)
+            table, _combined_meta = _load_dataset_table(dataset, slice_expr=slice_expr, limit_rows=limit_rows)
 
             if fmt == 'json':
                 return Response({
@@ -368,6 +411,9 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                     'name': dataset.name,
                     'columns': table['columns'],
                     'data': table['data'],
+                    'truncated': table.get('truncated', False),
+                    'row_count': table.get('row_count'),
+                    'sent_rows': table.get('sent_rows'),
                 })
             elif fmt == 'npy':
                 return Response({'error': 'npy format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -613,13 +659,20 @@ class ArchiveViewSet(viewsets.ModelViewSet):
         if not dataset.file_path or not os.path.exists(dataset.file_path):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
         try:
-            table, _combined_meta = _load_dataset_table(dataset)
+            table, _combined_meta = _load_dataset_table(
+                dataset,
+                slice_expr=request.query_params.get('slice'),
+                limit_rows=request.query_params.get('limit_rows'),
+            )
             return Response({
                 'archive_id': a.id,
                 'dataset_id': f"ds_{dataset.id}",
                 'name': dataset.name,
                 'columns': table['columns'],
                 'data': table['data'],
+                'truncated': table.get('truncated', False),
+                'row_count': table.get('row_count'),
+                'sent_rows': table.get('sent_rows'),
             })
         except OSError as e:
             if is_transient_h5_open_error(e):
