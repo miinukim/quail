@@ -1,4 +1,5 @@
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 from django.contrib.auth.models import User
 from types import SimpleNamespace
@@ -61,6 +62,18 @@ class APITest(TestCase):
         assert logs_resp.status_code == 200
         assert len(logs_resp.json().get('items', [])) >= 1
 
+    def test_run_logs_honor_from_seq(self):
+        run = ExperimentRun.objects.create(user=self.user, script_path='logs.qil')
+        first = RunLog.objects.create(experiment_run=run, level='INFO', message='first')
+        RunLog.objects.create(experiment_run=run, level='INFO', message='second')
+
+        resp = self.client.get(f'/api/runs/{run.id}/logs/', {'from_seq': str(first.id)})
+
+        assert resp.status_code == 200
+        items = resp.json().get('items', [])
+        assert len(items) == 1
+        assert items[0]['message'] == 'second'
+
     def test_dataset_query_projects_and_filters_rows(self):
         script = ExperimentScript.objects.create(name='sq', script_path='p3', author=self.user)
         run = ExperimentRun.objects.create(script=script, user=self.user)
@@ -90,6 +103,69 @@ class APITest(TestCase):
         body = resp.json()
         assert body['columns'] == ['x', 'y']
         assert body['data'] == [[0.2, 0.4]]
+
+    def test_dataset_data_supports_explicit_row_windows(self):
+        script = ExperimentScript.objects.create(name='window', script_path='window.qil', author=self.user)
+        run = ExperimentRun.objects.create(script=script, user=self.user)
+
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(base, 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        fname = os.path.join(data_dir, f'run_{run.id}_ds_window.h5')
+        with h5py.File(fname, 'w') as f:
+            import numpy as np
+            f.create_dataset('data', data=np.array([[[10.0, 11.0, 12.0], [20.0, 21.0, 22.0]]]))
+            f.create_dataset('params', data=np.array([[0.0, 1.0, 2.0]]))
+            f.attrs['param_axes'] = ['save']
+            f.attrs['data_axes'] = ['value']
+            f.attrs['num_data'] = 1
+
+        Dataset.objects.create(experiment_run=run, name='windowed', file_path=fname, metadata={})
+
+        resp = self.client.get(
+            f'/api/runs/{run.id}/datasets/windowed/data/',
+            {'format': 'json', 'limit_rows': '3', 'offset': '1'},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body['total_rows'] == 6
+        assert body['returned_rows'] == 3
+        assert body['start_row'] == 1
+        assert body['end_row'] == 4
+        assert body['truncated'] is True
+        assert body['data'] == [[0.0, 20.0], [1.0, 11.0], [1.0, 21.0]]
+
+    def test_dataset_data_defaults_to_tail_window(self):
+        script = ExperimentScript.objects.create(name='tail', script_path='tail.qil', author=self.user)
+        run = ExperimentRun.objects.create(script=script, user=self.user)
+
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(base, 'data')
+        os.makedirs(data_dir, exist_ok=True)
+        fname = os.path.join(data_dir, f'run_{run.id}_ds_tail.h5')
+        with h5py.File(fname, 'w') as f:
+            import numpy as np
+            f.create_dataset('data', data=np.array([[[10.0, 11.0, 12.0], [20.0, 21.0, 22.0]]]))
+            f.create_dataset('params', data=np.array([[0.0, 1.0, 2.0]]))
+            f.attrs['param_axes'] = ['save']
+            f.attrs['data_axes'] = ['value']
+            f.attrs['num_data'] = 1
+
+        Dataset.objects.create(experiment_run=run, name='tail', file_path=fname, metadata={})
+
+        resp = self.client.get(
+            f'/api/runs/{run.id}/datasets/tail/data/',
+            {'format': 'json', 'limit_rows': '2'},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body['total_rows'] == 6
+        assert body['returned_rows'] == 2
+        assert body['start_row'] == 4
+        assert body['end_row'] == 6
+        assert body['data'] == [[2.0, 12.0], [2.0, 22.0]]
 
     def test_dataset_query_groups_and_aggregates(self):
         script = ExperimentScript.objects.create(name='sg', script_path='p4', author=self.user)
@@ -208,3 +284,48 @@ class APITest(TestCase):
         assert list_resp.status_code == 200
         items = list_resp.json().get('items', [])
         assert any(item.get('schedule_id') == schedule.schedule_id for item in items)
+
+    def test_start_rejects_running_run(self):
+        run = ExperimentRun.objects.create(
+            user=self.user,
+            script_path='calib/foo.qil',
+            status='RUNNING',
+        )
+
+        with patch('expmanager.views.run_experiment_task.delay') as delay:
+            resp = self.client.post(f'/api/runs/{run.id}/start/')
+
+        assert resp.status_code == 400
+        delay.assert_not_called()
+
+    def test_start_requeues_failed_run_and_saves_task_id(self):
+        run = ExperimentRun.objects.create(
+            user=self.user,
+            script_path='calib/foo.qil',
+            status='FAILED',
+            completed_at=timezone.now(),
+        )
+
+        with patch('expmanager.views.run_experiment_task.delay', return_value=SimpleNamespace(id='manual-retry-task')):
+            resp = self.client.post(f'/api/runs/{run.id}/start/')
+
+        assert resp.status_code == 200
+        run.refresh_from_db()
+        assert run.status == 'QUEUED'
+        assert run.dispatch_task_id == 'manual-retry-task'
+        assert run.started_at is None
+        assert run.completed_at is None
+
+    def test_abort_returns_frontend_shape(self):
+        run = ExperimentRun.objects.create(
+            user=self.user,
+            script_path='calib/foo.qil',
+            status='RUNNING',
+            dispatch_task_id='abort-task',
+        )
+
+        with patch('expmanager.scheduling.revoke_task'):
+            resp = self.client.post(f'/api/runs/{run.id}/abort/')
+
+        assert resp.status_code == 200
+        assert resp.json() == {'rid': run.id, 'status': 'ABORTED'}

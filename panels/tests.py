@@ -32,9 +32,28 @@ class PanelAPITest(TestCase):
     def test_list_panels(self):
         Panel.objects.create(name='p1', script_path='a', author=self.user)
         Panel.objects.create(name='p2', script_path='b', author=self.user)
+        direct_resp = self.client.get('/api/panels/')
+        assert direct_resp.status_code == 200
+        assert isinstance(direct_resp.json().get('items'), list)
         resp = self.client.get('/api/panels/listPanels/')
         assert resp.status_code == 200
         assert len(resp.json().get('items', [])) >= 2
+
+    def test_inspect_classes_returns_frontend_shape(self):
+        import os
+        from django.conf import settings
+
+        os.makedirs(settings.USER_SCRIPTS_DIR, exist_ok=True)
+        script_path = os.path.join(settings.USER_SCRIPTS_DIR, 'classes_contract.qil')
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write('param shots = 10;')
+
+        resp = self.client.post('/api/panels/inspect-classes/', {'script_path': 'classes_contract.qil'}, format='json')
+
+        assert resp.status_code == 200
+        assert resp.json() == {'script_path': 'classes_contract.qil', 'classes': []}
+
+        os.remove(script_path)
 
     def test_run_now(self):
         p = Panel.objects.create(name='runme', script_path='a', author=self.user)

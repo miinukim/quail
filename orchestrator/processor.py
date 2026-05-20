@@ -5,6 +5,7 @@ It manages the runtime state (variables), interacts with instruments via the con
 import logging
 import ast
 import numpy as np
+from .instrument_client import InstrumentError
 from .parser import Lexer, Parser
 
 class VirtualProcessor:
@@ -461,7 +462,11 @@ class VirtualProcessor:
             if len(args) < 2:
                 raise ValueError("run() requires run(<device_name>, <fpga_code_or_path>)")
 
-            data = self.context['instruments'].run_fpga(args[0], args[1])
+            try:
+                data = self.context['instruments'].run_fpga(args[0], args[1])
+            except InstrumentError as exc:
+                self.logger.error("Device failure during run(%s): %s", args[0], exc)
+                raise
             try:
                 preview = repr(data)
                 if len(preview) > 1000:

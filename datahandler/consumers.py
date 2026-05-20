@@ -7,14 +7,13 @@ import asyncio
 import random
 import datetime
 import h5py
-import numpy as np
 from django.conf import settings
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from core.ttl_state import TTL_DEVICES, TTL_STATE
 from expmanager.dataset_query import DatasetQueryError, execute_query
-from expmanager.models import Dataset, ExperimentRun
-from expmanager.dataset_payloads import dataset_to_point_rows, open_h5_read
+from expmanager.models import Dataset, ExperimentRun, RunLog
+from expmanager.dataset_payloads import load_h5_point_table
 from expmanager.serializers import ExperimentRunListSerializer
 
 
@@ -26,6 +25,11 @@ STREAM_QUERY_MIN_INTERVAL_SEC = float(getattr(settings, "DATASET_STREAM_QUERY_MI
 
 def _now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _scope_user_is_authenticated(scope) -> bool:
+    user = scope.get("user")
+    return bool(user and getattr(user, "is_authenticated", False))
 
 
 def _dataset_stream_message(dataset: Dataset, payload: dict, message_type: str):
@@ -40,6 +44,10 @@ def _dataset_stream_message(dataset: Dataset, payload: dict, message_type: str):
         "truncated": bool(payload.get("truncated", False)),
         "row_count": payload.get("row_count"),
         "sent_rows": payload.get("sent_rows"),
+        "total_rows": payload.get("total_rows"),
+        "returned_rows": payload.get("returned_rows"),
+        "start_row": payload.get("start_row"),
+        "end_row": payload.get("end_row"),
         "updated_at": _now_iso(),
     }
 
@@ -54,43 +62,33 @@ def _tail_rows(rows, limit: int):
 
 
 def _limit_table_payload(payload: dict, key: str, limit: int):
-    rows, truncated, row_count, sent_rows = _tail_rows(payload.get(key, []), limit)
+    original_rows = payload.get(key, [])
+    rows, truncated, row_count, sent_rows = _tail_rows(original_rows, limit)
+    total_rows = payload.get("total_rows")
+    if total_rows is None:
+        total_rows = row_count
+    end_row = payload.get("end_row")
+    start_row = payload.get("start_row")
+    if isinstance(original_rows, list) and isinstance(rows, list) and len(rows) != len(original_rows):
+        end_row = end_row if end_row is not None else row_count
+        start_row = max(0, int(end_row or 0) - len(rows))
+    returned_rows = len(rows) if isinstance(rows, list) else sent_rows
     return {
         **payload,
         key: rows,
-        "truncated": truncated,
-        "row_count": row_count,
-        "sent_rows": sent_rows,
+        "truncated": bool(payload.get("truncated", False) or truncated),
+        "row_count": total_rows,
+        "sent_rows": returned_rows,
+        "total_rows": total_rows,
+        "returned_rows": returned_rows,
+        "start_row": start_row,
+        "end_row": end_row,
     }
 
 
 def _load_h5_table(file_path: str, metadata: dict | None = None, limit_rows: int | None = None):
-    with open_h5_read(file_path) as f:
-        data_ds = f["data"] if "data" in f else None
-        params_ds = f["params"] if "params" in f else None
-        file_meta = {}
-        for key in f.attrs.keys():
-            value = f.attrs.get(key)
-            if isinstance(value, np.ndarray):
-                file_meta[key] = value.tolist()
-            else:
-                file_meta[key] = value
-        combined_meta = dict(metadata or {})
-        combined_meta.update(file_meta)
-        if data_ds is None:
-            data_arr = np.array([])
-            params_arr = np.array(params_ds) if params_ds is not None else None
-        elif limit_rows and len(data_ds.shape) == 3 and data_ds.shape[1] > 0:
-            width = int(data_ds.shape[1])
-            saves = int(data_ds.shape[2])
-            keep_saves = max(1, min(saves, int(np.ceil(limit_rows / width))))
-            start = max(0, saves - keep_saves)
-            data_arr = np.array(data_ds[:, :, start:])
-            params_arr = np.array(params_ds[:, start:]) if params_ds is not None else None
-        else:
-            data_arr = np.array(data_ds)
-            params_arr = np.array(params_ds) if params_ds is not None else None
-        return dataset_to_point_rows(data_arr, params_arr, combined_meta)
+    table, _meta = load_h5_point_table(file_path, metadata or {}, limit_rows=limit_rows)
+    return table
 
 @database_sync_to_async
 def _fetch_runs(filters):
@@ -117,8 +115,51 @@ def _fetch_runs(filters):
     return {"items": serializer.data, "next_cursor": None}
 
 
+@database_sync_to_async
+def _fetch_run_status(run_id):
+    run = (
+        ExperimentRun.objects.filter(id=run_id)
+        .values("id", "status", "started_at", "completed_at", "last_heartbeat_at")
+        .first()
+    )
+    if run is None:
+        return None
+    status = run["status"]
+    progress = 1.0 if status in {"COMPLETED", "FAILED", "CANCELLED", "ABORTED"} else 0.0
+    return {
+        "type": "status",
+        "rid": run["id"],
+        "status": status,
+        "progress": progress,
+        "started_at": run["started_at"].isoformat() if run["started_at"] else None,
+        "completed_at": run["completed_at"].isoformat() if run["completed_at"] else None,
+        "last_heartbeat_at": run["last_heartbeat_at"].isoformat() if run["last_heartbeat_at"] else None,
+        "updated_at": _now_iso(),
+    }
+
+
+@database_sync_to_async
+def _fetch_run_logs(run_id, after_id=None, limit=100):
+    qs = RunLog.objects.filter(experiment_run_id=run_id).order_by("id")
+    if after_id:
+        qs = qs.filter(id__gt=after_id)
+    logs = qs[:limit]
+    return [
+        {
+            "id": log.id,
+            "level": log.level,
+            "message": log.message,
+            "timestamp": log.timestamp.isoformat(),
+        }
+        for log in logs
+    ]
+
+
 class RunsListConsumer(AsyncWebsocketConsumer):
     async def connect(self):
+        if not _scope_user_is_authenticated(self.scope):
+            await self.close(code=4401)
+            return
         self.period_ms = 2000
         self._running = True
         self._filters = {}
@@ -164,11 +205,14 @@ class RunsListConsumer(AsyncWebsocketConsumer):
 
 class RunStatusConsumer(AsyncWebsocketConsumer):
     async def connect(self):
+        if not _scope_user_is_authenticated(self.scope):
+            await self.close(code=4401)
+            return
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
         self.period_ms = 500
         self._running = True
-        # This consumer currently simulates status updates.
         await self.accept()
+        await self._send_status()
         self._task = asyncio.create_task(self._loop())
 
     async def disconnect(self, close_code):
@@ -187,31 +231,43 @@ class RunStatusConsumer(AsyncWebsocketConsumer):
                 self.period_ms = max(100, int(data["period_ms"]))
             except Exception:
                 pass
+        if data.get("op") == "refresh":
+            await self._send_status()
 
     async def _loop(self):
-        statuses = ["QUEUED", "RUNNING", "RUNNING", "RUNNING", "COMPLETED"]
-        progress = 0.0
         while self._running:
             await asyncio.sleep(self.period_ms / 1000.0)
-            status = random.choice(statuses)
-            progress = min(1.0, progress + random.uniform(0.01, 0.08))
-            msg = {
-                "type": "status",
-                "rid": self.run_id,
-                "status": status,
-                "progress": round(progress, 3),
-                "updated_at": _now_iso(),
-            }
-            await self.send(text_data=json.dumps(msg))
+            await self._send_status()
+
+    async def _send_status(self):
+        msg = await _fetch_run_status(self.run_id)
+        if msg is None:
+            await self.send(
+                text_data=json.dumps(
+                    {
+                        "type": "error",
+                        "rid": self.run_id,
+                        "message": "Run not found.",
+                        "updated_at": _now_iso(),
+                    }
+                )
+            )
+            await self.close()
+            return
+        await self.send(text_data=json.dumps(msg))
 
 
 class RunLogConsumer(AsyncWebsocketConsumer):
     async def connect(self):
+        if not _scope_user_is_authenticated(self.scope):
+            await self.close(code=4401)
+            return
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
         self.period_ms = 600
         self._running = True
-        # This consumer currently simulates log output.
+        self._last_log_id = 0
         await self.accept()
+        await self._send_logs(initial=True)
         self._task = asyncio.create_task(self._loop())
 
     async def disconnect(self, close_code):
@@ -230,30 +286,36 @@ class RunLogConsumer(AsyncWebsocketConsumer):
                 self.period_ms = max(100, int(data["period_ms"]))
             except Exception:
                 pass
+        if data.get("op") == "refresh":
+            self._last_log_id = 0
+            await self._send_logs(initial=True)
 
     async def _loop(self):
-        levels = ["INFO", "WARN", "DEBUG"]
-        messages = [
-            "Initializing pulse program.",
-            "DAQ buffer updated.",
-            "Temperature stable.",
-            "Calibration step complete.",
-            "Waiting for hardware response.",
-        ]
         while self._running:
             await asyncio.sleep(self.period_ms / 1000.0)
-            msg = {
-                "type": "log",
-                "rid": self.run_id,
-                "level": random.choice(levels),
-                "message": random.choice(messages),
-                "ts": _now_iso(),
-            }
-            await self.send(text_data=json.dumps(msg))
+            await self._send_logs()
+
+    async def _send_logs(self, initial=False):
+        logs = await _fetch_run_logs(self.run_id, None if initial else self._last_log_id)
+        if logs:
+            self._last_log_id = max(item["id"] for item in logs)
+        await self.send(
+            text_data=json.dumps(
+                {
+                    "type": "logs",
+                    "rid": self.run_id,
+                    "items": logs,
+                    "updated_at": _now_iso(),
+                }
+            )
+        )
 
 
 class DatasetStreamConsumer(AsyncWebsocketConsumer):
     async def connect(self):
+        if not _scope_user_is_authenticated(self.scope):
+            await self.close(code=4401)
+            return
         self.run_id = int(self.scope["url_route"]["kwargs"]["run_id"])
         self.dataset_ref = self.scope["url_route"]["kwargs"]["dataset_id"]
         self.group_name = f"run_{self.run_id}"
@@ -437,6 +499,9 @@ def _load_dataset_query_table(dataset_id: int, query_text: str):
 
 class TTLStatusConsumer(AsyncWebsocketConsumer):
     async def connect(self):
+        if not _scope_user_is_authenticated(self.scope):
+            await self.close(code=4401)
+            return
         self.period_ms = 1000
         self._running = True
         self._tick = 0

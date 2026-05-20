@@ -72,7 +72,16 @@ class ExperimentEngineTest(TestCase):
     @patch('orchestrator.engine.get_channel_layer')
     @patch('orchestrator.engine.async_to_sync')
     @patch('orchestrator.engine.InstrumentClient.health_check', return_value={"ok": True})
-    def test_experiment_execution(self, mock_health_check, mock_async_to_sync, mock_get_channel_layer):
+    @patch('orchestrator.engine.InstrumentClient.set_parameter', return_value=None)
+    @patch('orchestrator.engine.InstrumentClient.get_parameter', return_value=100.0)
+    def test_experiment_execution(
+        self,
+        mock_get_parameter,
+        mock_set_parameter,
+        mock_health_check,
+        mock_async_to_sync,
+        mock_get_channel_layer,
+    ):
         # Mock the channel layer to avoid Redis dependency
         mock_channel_layer = MagicMock()
         mock_get_channel_layer.return_value = mock_channel_layer

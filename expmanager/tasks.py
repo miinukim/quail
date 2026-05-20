@@ -3,6 +3,7 @@ Defines the Celery tasks for the expmanager app.
 Includes the `run_experiment_task` which is the entry point for background experiment execution.
 """
 from celery import shared_task
+import datetime
 import logging
 from expmanager.models import ExperimentRun, RunLog
 from expmanager.scheduling import cancel_schedule, ensure_next_recurring_run
@@ -10,7 +11,82 @@ from orchestrator.engine import ExperimentEngine
 import traceback
 import os
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
+
+
+def mark_stale_running_runs(timeout_seconds=None):
+    timeout = timeout_seconds
+    if timeout is None:
+        timeout = getattr(settings, "EXPERIMENT_RUN_STALE_TIMEOUT_SECONDS", 300)
+    timeout = max(1, int(timeout))
+    now = timezone.now()
+    cutoff = now - datetime.timedelta(seconds=timeout)
+    stale_runs = list(
+        ExperimentRun.objects.filter(status='RUNNING').filter(
+            Q(last_heartbeat_at__lt=cutoff)
+            | Q(last_heartbeat_at__isnull=True, started_at__lt=cutoff)
+        )
+    )
+
+    marked = 0
+    for experiment_run in stale_runs:
+        updated = ExperimentRun.objects.filter(
+            id=experiment_run.id,
+            status='RUNNING',
+        ).update(status='FAILED', completed_at=now)
+        if not updated:
+            continue
+        RunLog.objects.create(
+            experiment_run=experiment_run,
+            level="ERROR",
+            message=(
+                "Experiment worker heartbeat was lost; marking run as FAILED. "
+                f"Last heartbeat: {experiment_run.last_heartbeat_at or experiment_run.started_at}"
+            ),
+        )
+        marked += 1
+    return marked
+
+
+def _count_consecutive_schedule_failures(schedule, current_run):
+    runs = schedule.runs.filter(created_at__lte=current_run.created_at).order_by("-created_at", "-id")
+    count = 0
+    for run in runs:
+        if run.status != 'FAILED':
+            break
+        count += 1
+    return count
+
+
+def maybe_fail_schedule_after_repeated_failures(experiment_run):
+    if not experiment_run.schedule_id or experiment_run.status != 'FAILED':
+        return False
+    threshold = int(getattr(settings, "EXPERIMENT_SCHEDULE_MAX_CONSECUTIVE_FAILURES", 3))
+    if threshold <= 0:
+        return False
+
+    schedule = experiment_run.schedule
+    if schedule is None or schedule.status != 'ACTIVE':
+        return False
+
+    failures = _count_consecutive_schedule_failures(schedule, experiment_run)
+    if failures < threshold:
+        return False
+
+    cancel_schedule(schedule, mark_failed=True)
+    RunLog.objects.create(
+        experiment_run=experiment_run,
+        level="ERROR",
+        message=f"Schedule stopped after {failures} consecutive failed runs.",
+    )
+    return True
+
+
+@shared_task(name="expmanager.tasks.mark_stale_running_runs_task")
+def mark_stale_running_runs_task():
+    return mark_stale_running_runs()
+
 
 @shared_task(bind=True)
 def run_experiment_task(self, run_id):
@@ -40,6 +116,7 @@ def run_experiment_task(self, run_id):
 
     experiment_run.status = 'RUNNING'
     experiment_run.started_at = timezone.now()
+    experiment_run.last_heartbeat_at = experiment_run.started_at
     experiment_run.save()
 
     simulate_env = os.environ.get("QUAIL_SIMULATE_RUNS")
@@ -54,34 +131,45 @@ def run_experiment_task(self, run_id):
         engine_logger.info("task simulated completion rid=%s", run_id)
         experiment_run.status = 'COMPLETED'
         experiment_run.completed_at = timezone.now()
+        experiment_run.last_heartbeat_at = experiment_run.completed_at
         experiment_run.save()
         logger.info("run_experiment_task simulated complete rid=%s", run_id)
         return experiment_run.status
 
-    engine = ExperimentEngine(experiment_run)
+    engine = None
     
     try:
+        engine = ExperimentEngine(experiment_run)
         engine.run()
         experiment_run.status = 'COMPLETED'
     except InterruptedError:
         experiment_run.refresh_from_db(fields=['status'])
         if experiment_run.status != 'ABORTED':
             experiment_run.status = 'CANCELLED'
-        engine.log("Experiment cancelled.")
+        if engine is not None:
+            engine.log("Experiment cancelled.")
+        else:
+            RunLog.objects.create(experiment_run=experiment_run, level="WARNING", message="Experiment cancelled.")
         engine_logger.warning("task interrupted rid=%s", run_id)
     except Exception as e:
         experiment_run.status = 'FAILED'
-        engine.log(f"Error: {str(e)}")
-        engine.log(traceback.format_exc())
+        if engine is not None:
+            engine.log(f"Error: {str(e)}", level="ERROR")
+            engine.log(traceback.format_exc(), level="ERROR")
+        else:
+            RunLog.objects.create(experiment_run=experiment_run, level="ERROR", message=f"Error: {str(e)}")
+            RunLog.objects.create(experiment_run=experiment_run, level="ERROR", message=traceback.format_exc())
         engine_logger.exception("task failed rid=%s", run_id)
     finally:
         experiment_run.completed_at = timezone.now()
+        experiment_run.last_heartbeat_at = experiment_run.completed_at
         experiment_run.save()
         if experiment_run.schedule_id:
             schedule = experiment_run.schedule
             if schedule is not None:
                 schedule.last_run_at = experiment_run.completed_at
                 schedule.save(update_fields=['last_run_at', 'updated_at'])
+                maybe_fail_schedule_after_repeated_failures(experiment_run)
         logger.info("run_experiment_task finished rid=%s status=%s", run_id, experiment_run.status)
         engine_logger.info("task finished rid=%s status=%s", run_id, experiment_run.status)
         

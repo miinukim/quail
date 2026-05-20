@@ -66,6 +66,24 @@ class PanelViewSet(viewsets.ModelViewSet):
     serializer_class = PanelSerializer
     lookup_field = 'panel_id'
 
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        script_path = request.query_params.get('script_path')
+        tag = request.query_params.get('tag')
+        limit = request.query_params.get('limit')
+        if script_path:
+            qs = qs.filter(script_path=script_path)
+        serializer = PanelSerializer(qs.order_by('-updated_at'), many=True)
+        items = list(serializer.data)
+        if tag:
+            items = [x for x in items if tag in (x.get('tags') or [])]
+        if limit:
+            try:
+                items = items[: int(limit)]
+            except Exception:
+                pass
+        return Response({'items': items, 'next_cursor': None})
+
     def create(self, request, *args, **kwargs):
         # Create a persistent panel from a script_path
         serializer = PanelCreateSerializer(data=request.data)
@@ -155,27 +173,19 @@ class PanelViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='inspect-classes')
     def inspect_classes(self, request):
-        return Response({}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        script_path = request.data.get('script_path')
+        if not script_path:
+            return Response({'error': 'script_path required'}, status=status.HTTP_400_BAD_REQUEST)
+        resolved = resolve_script_path(script_path)
+        if not resolved or not os.path.exists(resolved):
+            return Response({'error': 'script not found'}, status=status.HTTP_404_NOT_FOUND)
+        # Current QIL inspection infers parameters, not Python-style class names.
+        # Keep this endpoint successful so the frontend can gracefully fall back.
+        return Response({'script_path': script_path, 'classes': []})
 
     @action(detail=False, methods=['get'])
     def listPanels(self, request):
-        # Basic filter support for panels.
-        qs = self.get_queryset()
-        script_path = request.query_params.get('script_path')
-        tag = request.query_params.get('tag')
-        limit = request.query_params.get('limit')
-        if script_path:
-            qs = qs.filter(script_path=script_path)
-        serializer = PanelSerializer(qs, many=True)
-        items = serializer.data
-        if tag:
-            items = [x for x in items if tag in (x.get('tags') or [])]
-        if limit:
-            try:
-                items = items[: int(limit)]
-            except Exception:
-                pass
-        return Response({'items': items, 'next_cursor': None})
+        return self.list(request)
 
     def retrieve(self, request, panel_id=None):
         # Return panel plus expanded config metadata for the UI.

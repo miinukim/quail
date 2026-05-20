@@ -24,10 +24,8 @@ from .scheduling import (
     normalize_timezone_name,
     schedule_run,
 )
-from .dataset_payloads import dataset_to_point_rows, is_transient_h5_open_error, open_h5_read
+from .dataset_payloads import is_transient_h5_open_error, load_h5_point_table, open_h5_read
 from .dataset_query import DatasetQueryError, execute_query
-import h5py
-import numpy as np
 
 
 def _positive_int(value, default=None):
@@ -38,72 +36,26 @@ def _positive_int(value, default=None):
     return n if n > 0 else default
 
 
-def _tail_table_rows(table, limit_rows=None):
-    limit = _positive_int(limit_rows)
-    if limit is None:
-        return table
-    rows = table.get('data')
-    if isinstance(rows, list) and len(rows) > limit:
-        return {
-            **table,
-            'data': rows[-limit:],
-            'truncated': True,
-            'row_count': len(rows),
-            'sent_rows': limit,
-        }
+def _load_dataset_table(dataset, slice_expr=None, limit_rows=None, offset_rows=None):
+    return load_h5_point_table(
+        dataset.file_path,
+        dataset.metadata or {},
+        slice_expr=slice_expr,
+        limit_rows=limit_rows,
+        offset_rows=offset_rows,
+    )
+
+
+def _table_window_metadata(table):
     return {
-        **table,
-        'truncated': False,
-        'row_count': len(rows) if isinstance(rows, list) else None,
-        'sent_rows': len(rows) if isinstance(rows, list) else None,
+        'truncated': table.get('truncated', False),
+        'row_count': table.get('row_count'),
+        'sent_rows': table.get('sent_rows'),
+        'total_rows': table.get('total_rows'),
+        'returned_rows': table.get('returned_rows'),
+        'start_row': table.get('start_row'),
+        'end_row': table.get('end_row'),
     }
-
-
-def _load_dataset_table(dataset, slice_expr=None, limit_rows=None):
-    with open_h5_read(dataset.file_path) as f:
-        if 'data' not in f:
-            raise KeyError('Data not present in file')
-        combined_meta = dict(dataset.metadata or {})
-        for key in ('param_axes', 'data_axes', 'data_axes_effective', 'num_data'):
-            if key in f.attrs:
-                val = f.attrs.get(key)
-                if isinstance(val, np.ndarray):
-                    val = val.tolist()
-                combined_meta[key] = val
-
-        data_ds = f['data']
-        params_ds = f['params'] if 'params' in f else None
-        if slice_expr:
-            slices = []
-            for part in slice_expr.split(','):
-                part = part.strip()
-                if part == ':' or part == '':
-                    slices.append(slice(None))
-                else:
-                    if ':' in part:
-                        s, e = part.split(':')
-                        start = int(s) if s != '' else None
-                        stop = int(e) if e != '' else None
-                        slices.append(slice(start, stop))
-                    else:
-                        slices.append(int(part))
-            arr = np.array(data_ds[tuple(slices)])
-            params_arr = np.array(params_ds) if params_ds is not None else None
-        else:
-            limit = _positive_int(limit_rows)
-            if limit is not None and len(data_ds.shape) == 3 and data_ds.shape[1] > 0:
-                width = int(data_ds.shape[1])
-                saves = int(data_ds.shape[2])
-                keep_saves = max(1, min(saves, int(np.ceil(limit / width))))
-                start = max(0, saves - keep_saves)
-                arr = np.array(data_ds[:, :, start:])
-                params_arr = np.array(params_ds[:, start:]) if params_ds is not None else None
-            else:
-                arr = np.array(data_ds)
-                params_arr = np.array(params_ds) if params_ds is not None else None
-
-        table = dataset_to_point_rows(arr, params_arr, combined_meta)
-        return _tail_table_rows(table, limit_rows), combined_meta
 
 
 def _dataset_table_to_csv_response(table, filename):
@@ -303,14 +255,38 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         """
-        Manually trigger a run if it failed or was paused.
+        Manually retry a failed/cancelled run without allowing duplicate execution.
         """
         experiment_run = self.get_object()
-        # Trigger Celery task
+        restartable_statuses = {'FAILED', 'CANCELLED', 'ABORTED'}
+        if experiment_run.status not in restartable_statuses:
+            return Response(
+                {'error': f'Run is in {experiment_run.status} state and cannot be started again.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        updated = ExperimentRun.objects.filter(
+            id=experiment_run.id,
+            status__in=restartable_statuses,
+        ).update(
+            status='QUEUED',
+            started_at=None,
+            completed_at=None,
+            last_heartbeat_at=None,
+            dispatch_task_id='',
+        )
+        if not updated:
+            return Response(
+                {'error': 'Run state changed before it could be queued. Please refresh and retry.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         try:
             task = run_experiment_task.delay(experiment_run.id)
+            ExperimentRun.objects.filter(id=experiment_run.id).update(dispatch_task_id=task.id)
             return Response({'status': 'Experiment queued', 'task_id': task.id})
         except OSError as e:
+            ExperimentRun.objects.filter(id=experiment_run.id).update(status='FAILED', completed_at=timezone.now())
             if _is_transient_h5_open_error(e):
                 return Response(
                     {'error': 'Dataset file is temporarily unavailable. Please retry shortly.'},
@@ -318,6 +294,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                 )
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         except Exception as e:
+            ExperimentRun.objects.filter(id=experiment_run.id).update(status='FAILED', completed_at=timezone.now())
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=True, methods=['post'])
@@ -333,7 +310,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         experiment_run.status = 'ABORTED'
         experiment_run.completed_at = timezone.now()
         experiment_run.save(update_fields=['status', 'completed_at'])
-        return Response({'status': 'Experiment aborted'})
+        return Response({'rid': experiment_run.id, 'status': experiment_run.status})
 
     @action(detail=True, methods=['get'])
     def datasets(self, request, pk=None):
@@ -350,6 +327,12 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
         # Return full log history for a run.
         experiment_run = self.get_object()
         logs = experiment_run.logs.order_by('timestamp').all()
+        from_seq = request.query_params.get('from_seq')
+        if from_seq is not None:
+            try:
+                logs = logs.filter(id__gt=int(from_seq))
+            except (TypeError, ValueError):
+                return Response({'error': 'from_seq must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
         serializer = RunLogSerializer(logs, many=True)
         return Response({'rid': experiment_run.id, 'items': serializer.data})
 
@@ -387,10 +370,11 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path=r'datasets/(?P<dataset_name>[^/]+)/data')
     def dataset_data(self, request, pk=None, dataset_name=None):
-        """GET data with optional ?format=json|npy|hdf5, ?slice=0:100,:, and ?limit_rows=N."""
+        """GET data with optional ?format=json, ?slice=0:100,:, ?limit_rows=N, and ?offset=N."""
         fmt = request.query_params.get('format', 'json')
         slice_expr = request.query_params.get('slice')
         limit_rows = request.query_params.get('limit_rows')
+        offset_rows = request.query_params.get('offset', request.query_params.get('start_row'))
         experiment_run = self.get_object()
 
         try:
@@ -402,7 +386,12 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Data file not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
-            table, _combined_meta = _load_dataset_table(dataset, slice_expr=slice_expr, limit_rows=limit_rows)
+            table, _combined_meta = _load_dataset_table(
+                dataset,
+                slice_expr=slice_expr,
+                limit_rows=limit_rows,
+                offset_rows=offset_rows,
+            )
 
             if fmt == 'json':
                 return Response({
@@ -411,9 +400,7 @@ class ExperimentRunViewSet(viewsets.ModelViewSet):
                     'name': dataset.name,
                     'columns': table['columns'],
                     'data': table['data'],
-                    'truncated': table.get('truncated', False),
-                    'row_count': table.get('row_count'),
-                    'sent_rows': table.get('sent_rows'),
+                    **_table_window_metadata(table),
                 })
             elif fmt == 'npy':
                 return Response({'error': 'npy format not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
@@ -663,6 +650,7 @@ class ArchiveViewSet(viewsets.ModelViewSet):
                 dataset,
                 slice_expr=request.query_params.get('slice'),
                 limit_rows=request.query_params.get('limit_rows'),
+                offset_rows=request.query_params.get('offset', request.query_params.get('start_row')),
             )
             return Response({
                 'archive_id': a.id,
@@ -670,9 +658,7 @@ class ArchiveViewSet(viewsets.ModelViewSet):
                 'name': dataset.name,
                 'columns': table['columns'],
                 'data': table['data'],
-                'truncated': table.get('truncated', False),
-                'row_count': table.get('row_count'),
-                'sent_rows': table.get('sent_rows'),
+                **_table_window_metadata(table),
             })
         except OSError as e:
             if is_transient_h5_open_error(e):

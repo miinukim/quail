@@ -23,6 +23,16 @@ def _env_bool(name, default=False):
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _env_list(name, default=None):
     raw = os.environ.get(name)
     if raw is None:
@@ -163,6 +173,17 @@ CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = os.environ.get("DJANGO_TIME_ZONE", "Asia/Seoul")
+EXPERIMENT_RUN_HEARTBEAT_INTERVAL_SECONDS = _env_int("EXPERIMENT_RUN_HEARTBEAT_INTERVAL_SECONDS", 10)
+EXPERIMENT_RUN_STALE_TIMEOUT_SECONDS = _env_int("EXPERIMENT_RUN_STALE_TIMEOUT_SECONDS", 300)
+EXPERIMENT_RUN_STALE_SWEEP_INTERVAL_SECONDS = _env_int("EXPERIMENT_RUN_STALE_SWEEP_INTERVAL_SECONDS", 60)
+EXPERIMENT_DATA_FLUSH_EVERY_SAVES = _env_int("EXPERIMENT_DATA_FLUSH_EVERY_SAVES", 1)
+EXPERIMENT_SCHEDULE_MAX_CONSECUTIVE_FAILURES = _env_int("EXPERIMENT_SCHEDULE_MAX_CONSECUTIVE_FAILURES", 3)
+CELERY_BEAT_SCHEDULE = {
+    "mark-stale-experiment-runs": {
+        "task": "expmanager.tasks.mark_stale_running_runs_task",
+        "schedule": EXPERIMENT_RUN_STALE_SWEEP_INTERVAL_SECONDS,
+    },
+}
 
 
 # Database

@@ -8,6 +8,75 @@ import logging
 
 logger = logging.getLogger("quail.engine.instrument")
 
+
+class InstrumentError(RuntimeError):
+    """Base class for instrumentserver/device failures reported to Quail."""
+
+    code = "INSTRUMENT_ERROR"
+
+    def __init__(self, message, *, target=None, operation=None, details=None):
+        self.target = target
+        self.operation = operation
+        self.details = details
+        super().__init__(f"{self.code}: {message}")
+
+
+class InstrumentServerError(InstrumentError):
+    code = "INSTRUMENTSERVER_ERROR"
+
+
+class DeviceConnectionError(InstrumentError):
+    code = "DEVICE_DISCONNECTED"
+
+
+class DeviceTimeoutError(InstrumentError):
+    code = "DEVICE_TIMEOUT"
+
+
+class SequencerNotReadyError(InstrumentError):
+    code = "SEQUENCER_NOT_READY"
+
+
+ERROR_CODE_TO_EXCEPTION = {
+    "DEVICE_DISCONNECTED": DeviceConnectionError,
+    "DEVICE_CONNECTION_LOST": DeviceConnectionError,
+    "DEVICE_TIMEOUT": DeviceTimeoutError,
+    "SEQUENCER_TIMEOUT": DeviceTimeoutError,
+    "SEQUENCER_NOT_READY": SequencerNotReadyError,
+}
+
+
+def _error_payload_message(error_payload):
+    if isinstance(error_payload, dict):
+        return str(error_payload.get("message") or error_payload.get("error") or error_payload.get("code") or "Instrument failure")
+    return str(error_payload)
+
+
+def _error_payload_code(error_payload):
+    if isinstance(error_payload, dict):
+        code = error_payload.get("code") or error_payload.get("type")
+        return str(code).upper() if code else ""
+    text = str(error_payload).lower()
+    if any(marker in text for marker in ("disconnect", "connection lost", "not connected", "device offline", "no route to host")):
+        return "DEVICE_DISCONNECTED"
+    if "timeout" in text or "timed out" in text:
+        return "DEVICE_TIMEOUT"
+    if "sequencer" in text and any(marker in text for marker in ("not ready", "not armed", "not initialized")):
+        return "SEQUENCER_NOT_READY"
+    return ""
+
+
+def instrument_error_from_payload(error_payload, *, operation=None, target=None):
+    code = _error_payload_code(error_payload)
+    exc_cls = ERROR_CODE_TO_EXCEPTION.get(code, InstrumentServerError)
+    return exc_cls(
+        _error_payload_message(error_payload),
+        operation=operation,
+        target=target,
+        details=error_payload if isinstance(error_payload, dict) else None,
+    )
+
+
 class InstrumentClient:
     """
     ZMQ Client for instrumentserver.
@@ -46,8 +115,10 @@ class InstrumentClient:
         """
         Send a raw dictionary as a JSON string and wait for response.
         """
+        operation = instruction_dict.get("operation")
+        target = (instruction_dict.get("call_spec") or {}).get("target")
         try:
-            logger.info("InstrumentClient send: %s", instruction_dict.get("operation"))
+            logger.info("InstrumentClient send: %s target=%s", operation, target)
             self.socket.send_string(json.dumps(instruction_dict))
             response_str = self.socket.recv_string()
             response = json.loads(response_str)
@@ -55,13 +126,13 @@ class InstrumentClient:
             
             if response.get("_class_type") == "ServerResponse":
                 if response.get("error") and response["error"] != "None":
-                    raise RuntimeError(f"Server Error: {response['error']}")
+                    raise instrument_error_from_payload(response["error"], operation=operation, target=target)
                 return response.get("message")
             return response
             
         except zmq.ZMQError as e:
             logger.error(f"ZMQ Error: {e}")
-            raise ConnectionError(f"Communication failed: {e}")
+            raise InstrumentServerError(f"Communication failed: {e}", operation=operation, target=target)
 
     def get_parameter(self, instrument, parameter):
         """

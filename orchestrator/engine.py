@@ -2,12 +2,14 @@
 This file defines the ExperimentEngine class, which executes the experiment script.
 It handles logging, data saving, and invoking the VirtualProcessor to run the experiment script.
 """
+from django.conf import settings
 from django.utils import timezone
 import time
 import os
 import logging
+import threading
 from pathlib import Path
-from expmanager.models import RunLog, Dataset
+from expmanager.models import ExperimentRun, RunLog, Dataset
 from expmanager.dataset_payloads import save_event_to_point_rows
 from .instrument_client import InstrumentClient
 from channels.layers import get_channel_layer
@@ -28,6 +30,8 @@ class ExperimentEngine:
         self.group_name = f"run_{experiment_run.id}"
         self.h5file = None  # current HDF5 file handle
         self.current_dataset = None # current Dataset model instance
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread = None
         self.logger.info("ExperimentEngine initialized rid=%s", experiment_run.id)
 
     def log(self, message, level='INFO'):
@@ -180,8 +184,8 @@ class ExperimentEngine:
             # Add new params column
             dset_params[:, num_saves] = np.array(params)
             
-            # Flush to disk periodically for safety (every 10 saves)
-            if num_saves % 10 == 0:
+            # Flush policy is configurable: default is every save for deployment safety.
+            if self._should_flush_save(new_num_saves):
                 self.h5file.flush()
 
         except Exception as e:
@@ -200,6 +204,10 @@ class ExperimentEngine:
                 'rows': payload.get('data', []),
             }
         )
+
+    def _should_flush_save(self, save_count):
+        interval = int(getattr(settings, "EXPERIMENT_DATA_FLUSH_EVERY_SAVES", 1))
+        return interval > 0 and save_count % interval == 0
 
     def close_data_file(self):
         """
@@ -224,6 +232,54 @@ class ExperimentEngine:
         if self.experiment_run.status in ('CANCELLED', 'ABORTED'):
             raise InterruptedError("Experiment cancelled by user")
 
+    def _write_heartbeat(self):
+        ExperimentRun.objects.filter(
+            id=self.experiment_run.id,
+            status='RUNNING',
+        ).update(last_heartbeat_at=timezone.now())
+
+    def _heartbeat_loop(self):
+        interval = float(getattr(settings, "EXPERIMENT_RUN_HEARTBEAT_INTERVAL_SECONDS", 10))
+        interval = max(1.0, interval)
+        while not self._heartbeat_stop.wait(interval):
+            try:
+                self._write_heartbeat()
+            except Exception:
+                self.logger.exception("Experiment heartbeat update failed rid=%s", self.experiment_run.id)
+
+    def start_heartbeat(self):
+        interval = float(getattr(settings, "EXPERIMENT_RUN_HEARTBEAT_INTERVAL_SECONDS", 10))
+        if interval <= 0:
+            return
+        self._write_heartbeat()
+        self._heartbeat_stop.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name=f"quail-run-heartbeat-{self.experiment_run.id}",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
+    def stop_heartbeat(self):
+        self._heartbeat_stop.set()
+        thread = self._heartbeat_thread
+        if thread is not None:
+            thread.join(timeout=1.0)
+        try:
+            self._write_heartbeat()
+        except Exception:
+            self.logger.exception("Final heartbeat update failed rid=%s", self.experiment_run.id)
+
+    def interruptible_sleep(self, duration):
+        duration = max(0.0, float(duration))
+        deadline = time.monotonic() + duration
+        while True:
+            self.check_abort()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(0.25, remaining))
+
     def run(self):
         """
         Entry point for running the experiment synchronously (from Celery).
@@ -236,7 +292,7 @@ class ExperimentEngine:
         # quail/orchestrator/engine.py -> quail/logs
         # Context for the parser
         context = {
-            'sleep': time.sleep,
+            'sleep': self.interruptible_sleep,
             'instruments': self.client,
             'fpga_code': fpga_code,
             'run_arguments': self.experiment_run.arguments or {},
@@ -245,6 +301,7 @@ class ExperimentEngine:
             'check_abort': self.check_abort
         }
         
+        self.start_heartbeat()
         try:
             # Execute using custom parser
             from .processor import VirtualProcessor
@@ -259,6 +316,7 @@ class ExperimentEngine:
             self.logger.exception("Experiment execution failed rid=%s", self.experiment_run.id)
             raise e
         finally:
+            self.stop_heartbeat()
             # Always close the data file, even on error/abort
             self.close_data_file()
             self.client.close()
