@@ -15,7 +15,9 @@ class CustomAuthToken(ObtainAuthToken):
                                            context={'request': request})
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
-        token, created = Token.objects.get_or_create(user=user)
+        # Latest login wins: a new browser login invalidates any previous token.
+        Token.objects.filter(user=user).delete()
+        token = Token.objects.create(user=user)
         return Response({
             'token': token.key,
             'user_id': user.pk,
